@@ -29,14 +29,14 @@ offroad** : scénario GPS simulé (sortie de parcours), **bip + vibration**,
    **chaque mesure GPS pendant l'alerte** (choix terrain déjà en place).
 
 ## Ce qui RESTE À FAIRE
-1. **`flutter build apk --release`** — lancé aujourd'hui mais interrompu par
-   le timeout du terminal (120 s). Relancer en tâche de fond :
-   ```
-   flutter build apk --release
-   ```
-   L'APK sort dans `build\app\outputs\flutter-apk\app-release.apk`.
-2. **Copier l'APK dans `presentation/`** (ce dossier).
+1. ~~**`flutter build apk --release`**~~ ✅ **fait le 2026-10-09** :
+   `build\app\outputs\flutter-apk\app-release.apk` (18,5 Mo).
+2. **Copier l'APK dans `presentation/`** (ce dossier) — toujours à faire.
 3. Écrire les instructions d'installation dans `presentation/INSTALLER.md`. ✅ fait.
+
+## Code source en ligne
+Le projet est versionné sur GitHub : `https://github.com/ivandjeapro-gif/OT2-Tab`
+(branche `main`, commit initial `75eeb22`). Reprendre avec `git pull`.
 
 ## Instructions d'installation (à copier tel quel)
 - Copier `app-release.apk` sur le téléphone (câble USB, mail, drive).

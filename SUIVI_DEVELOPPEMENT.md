@@ -514,3 +514,47 @@ Point de reprise : la liste «— A FAIRE» ci-dessous.
    dépôt** (seul `CDC SERVEUR.md` le spécifie) : à traiter là où vit le
    back-end.
 3. Vérifier `routeProgress` après l'intervention de l'autre agent.
+
+---
+
+## Séance du 2026-10-09 (après-midi) — APK release + mise en ligne Git
+
+### Réalisations
+1. **APK release construit** : `flutter build apk --release` →
+   `build\app\outputs\flutter-apk\app-release.apk` (18,5 Mo, code retour 0,
+   384 s Gradle). ⚠️ **pas encore copié dans `presentation/`** (étape 2 de
+   `REPRISE-DEMAIN.md`).
+2. **Dépôt Git créé et publié** — le projet n'était pas versionné :
+   - `git init` (branche `main`), identité **locale uniquement**
+     `ivandjeapro-gif <ivandjeapro@gmail.com>` ;
+   - `origin = https://github.com/ivandjeapro-gif/OT2-Tab.git` ;
+   - commit initial `75eeb22` : **126 fichiers / 4,3 Mo** (le `.gitignore`
+     standard Flutter écarte `build/`, `.dart_tool/`, `*.log`, `*.apk`) ;
+   - `main` tracke `origin/main`.
+3. **`flutter_screenutil: ^5.9.3` ajouté au `pubspec.yaml`** (+ `pub get`) —
+   **aucun usage dans `lib/`** : à confirmer (l'utiliser ou le retirer).
+4. Les 2 dépréciations `RadioGroup` d'`analyze.log` sont corrigées :
+   `flutter analyze` = **0 problème**.
+
+### En cours — interrompu, repris demain
+- `_TopBar` (`lib/screens/dt_screen.dart:290`) : positionnement du groupe de
+  badges de droite (BLE / Wi-Fi / GPS) dans son `Flexible(flex:3)`. Le
+  comportement de `FittedBox(scaleDown)` + `RenderFlex` a été étudié dans le
+  SDK (un enfant `Flexible` plus étroit que son allocation ne consomme pas sa
+  place : `RenderFlex` la comptabilise comme espace libre, donc les badges se
+  calent après le nom et non contre le bord droit). **Aucune modification
+  appliquée.**
+
+### État vérification
+- `flutter analyze` : **0 problème**.
+- `flutter test` : 24/24 (diagnostic d'écrans, 8 tailles × 3 pages).
+- `flutter build apk --release` : **OK** (voir ci-dessus).
+
+### À FAIRE — prochaine séance
+1. Copier `app-release.apk` dans `presentation/` et vérifier `INSTALLER.md`.
+2. Trancher sur `flutter_screenutil` (responsive via le plugin, ou retrait du
+   `pubspec`).
+3. Suite du `_TopBar` (groupe de badges à caler à droite) si besoin terrain.
+4. Inchangés : réception serveur des payloads `BLAST_LOCK.bloc` /
+   `BLAST_SEND.mode`/`bloc`, vérification de `routeProgress`, validation BLE
+   sur deux tablettes Android réelles.
