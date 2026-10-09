@@ -1,0 +1,48 @@
+1) Problème actuel : Spotter (TAB 1) → DT (TAB 2) : Wi-Fi TCP — mais le hotspot doit être activé à la main dans Android, l'app ne le crée pas. Solution voulu : l'app au démarage doit obligatoirement lancer l'activation du hospot si le profil choisis à la connexion l'exige. Sinon pas necessaire. 
+
+2) BLE — jamais validé sur du vrai matériel (noté "à valider" dans le suivi). A valider
+
+3) Probleme actuel : Même reçu, le DT ne fait que relayer (BLE_RELAY) : son écran n'affiche pas les données du spotter, juste le journal de supervision. Solution: notifier a l'ecran quand les données Excavator et Sportter sont reçu. 
+
+4) Aucun enrôlement (REQ-002 pas fait) : chacun choisit son profil au login, rien n'identifie le téléphone. Trois téléphones qui choisissent tous "Spotter 10" → conflit. Comment la creation des profil se fera t-elle ? 
+
+5) Points à transmettre à l'autre agent
+Sujet : routeProgress — barre de progression et position carte du DT
+Fichiers concernés : lib\state\session.dart (champ routeProgress, getter positionDt, _syncTick) et lib\screens\dt_screen.dart (_RouteBar).
+
+État actuel (ce qui marche)
+_RouteBar et positionDt lisent le même routeProgress et les mêmes tables de positions → carte et barre cohérentes entre elles.
+Points de départ/arrivée réels : positionDepart (table des positions) et positionDestination (affectation serveur).
+Clamps corrects (0.0–1.0), pas de débordement.
+3 anomalies à corriger
+1. Valeur de départ codée en dur — session.dart, champ routeProgress :
+
+dart
+
+double routeProgress = 0.62;
+Le camion apparaît à 62 % du trajet dès l'ouverture, sans lien avec la réalité. → Initialiser à 0.0 et laisser le GPS piloter.
+
+2. Avancement artificiel — session.dart, dans _syncTick() :
+
+dart
+
+if (routeProgress < 0.95) {
+  routeProgress = min(0.95, routeProgress + 0.03);
+}
+Le trajet avance au rythme de l'horloge (5 s), pas du déplacement réel. → À supprimer.
+
+3. Le GPS réel n'est pas branché — positionDt (session.dart ~ligne 288) interpole linéairement entre départ et arrivée au lieu d'utiliser la position GPS réelle, pourtant déjà disponible dans servicePosition.derniere (champ wgs84 : (lat, lng)).
+
+Correction proposée (signature)
+Dans Session, calculer l'avancement à chaque mesure GPS :
+
+// Pseudo-code — à placer dans le listener de mesures ou dans positionDt
+progress = projection(positionGPS, depart, destination)  // produit scalaire normalisé, clampé 0..1
+positionDt peut alors renvoyer la vraie position GPS (ou rester l'interpolation si vous préférez lisser) ;
+remplacer la valeur 0.62 par 0.0 ;
+supprimer l'incrément de _syncTick (attention : garder le notifyListeners(), il fait vivre la boucle de fond) ;
+gérer le cas depart == null || destination == null (déjà géré aujourd'hui par le return null de positionDt).
+⚠️ Ce que l'autre agent ne doit PAS toucher
+_syncTick : ne pas restaurer les nextInt ni le push('Synchro #n terminée…') — ce sont des simulations que je viens de retirer (demander confirmation si besoin).
+notification_ticker.dart : deux régimes (alerte rouge forcée / défilement réel), ne pas remettre de messages de démo.
+La boucle Timer.periodic(5 s) de startSyncLoop reste en place tant que routeProgress y est géré.
