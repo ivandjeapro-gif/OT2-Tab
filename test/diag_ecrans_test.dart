@@ -15,7 +15,7 @@ import 'package:ore_tracking/screens/parametres_screen.dart';
 import 'package:ore_tracking/screens/spotter_screen.dart';
 import 'package:ore_tracking/state/session.dart';
 
-import '../lib/main.dart' show kTailleReference;
+import 'package:ore_tracking/main.dart' show kTailleReference;
 
 void main() {
   // Les ecrans de connexion et de parametres n'appartiennent a aucun profil :

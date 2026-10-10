@@ -584,14 +584,17 @@ class _RouteBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final double k = MiseEnPage.depuis(context).k;
-    // Meme echelle que les bandeaux : sur une fenetre basse la barre se
-    // resserre au lieu de manger la place des tableaux.
-    final double hauteur = (1 * k).clamp(36.0, 54.0);
-    final double epaisseur = (4 * k).clamp(3.0, 4.0);
-    final double trait = (2.5 * k).clamp(1.5, 2.5);
-    final double coteBornes = (28 * k).clamp(20.0, 28.0);
-    final double coteRepere = (22 * k).clamp(16.0, 22.0);
-    final double cotePosition = (14 * k).clamp(24.0, 34.0);
+    // Barre plus visible : 26 px sur la tablette (contre 6 px auparavant,
+    // jugee trop petite a l'usage). Les repères restent lisibles au Doigt.
+    final double hauteur = (10 * k).clamp(15.0, 30.0);
+    final double epaisseur = (6 * k).clamp(3.0, 25.0);
+    final double trait = (55 * k).clamp(0.5, 1.5);
+    // Les cercles ne doivent jamais depasser la hauteur : sinon ils sont
+    // rognes par le bord de la barre. On borne donc chaque cote a la hauteur
+    // disponible.
+    final double coteBornes = (20 * k).clamp(10.0, hauteur);
+    final double coteRepere = (14 * k).clamp(8.0, hauteur);
+    final double cotePosition = (24 * k).clamp(12.0, hauteur);
 
     return SizedBox(
       height: hauteur,

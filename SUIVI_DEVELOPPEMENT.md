@@ -532,7 +532,8 @@ Point de reprise : la liste «— A FAIRE» ci-dessous.
      standard Flutter écarte `build/`, `.dart_tool/`, `*.log`, `*.apk`) ;
    - `main` tracke `origin/main`.
 3. **`flutter_screenutil: ^5.9.3` ajouté au `pubspec.yaml`** (+ `pub get`) —
-   **aucun usage dans `lib/`** : à confirmer (l'utiliser ou le retirer).
+   **à conserver** : c'est l'autre agent qui l'a posé pour le responsive.
+   Aucun appel dans `lib/` pour l'instant (son branchement viendra de son côté).
 4. Les 2 dépréciations `RadioGroup` d'`analyze.log` sont corrigées :
    `flutter analyze` = **0 problème**.
 
