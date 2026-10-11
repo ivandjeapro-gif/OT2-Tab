@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:web/web.dart' as web;
@@ -179,20 +179,39 @@ class AlerteSysteme implements AlerteMetier {
     // try/catch partout : y compris l'acces a [Platform], indisponible sur
     // certaines cibles — `jouer()` ne doit jamais lever.
     try {
-      // Le web est autorise : audioplayers lit les assets via un blob URL.
-      if (!kIsWeb &&
-          !Platform.isAndroid &&
+      // Web exclus : audioplayers desktop lit les bytes, pas le web.
+      if (kIsWeb) {
+        final AudioPlayer lecteur = _lecteur ??= AudioPlayer();
+        lecteur.stop().then(
+              (void _) => lecteur.play(AssetSource(cheminBip)),
+              onError: (Object _) {},
+            );
+        return;
+      }
+      if (!Platform.isAndroid &&
           !Platform.isIOS &&
           !Platform.isWindows) {
         return;
       }
       final AudioPlayer lecteur = _lecteur ??= AudioPlayer();
-      lecteur.stop().then(
-            (void _) => lecteur.play(AssetSource(cheminBip)),
-            onError: (Object _) {},
-          );
-    } catch (_) {
-      // Pas d'audio sur cette machine : la vibration a deja joue son role.
+      // BytesSource : lecture des octets de l'asset via rootBundle puis
+      // decodage direct. Plus fiable qu'AssetSource sur Windows, ou le
+      // chemin d'asset a change silencieusement selon les versions.
+      rootBundle.load('assets/$cheminBip').then((ByteData donnees) {
+        lecteur.stop().then((void _) {
+          lecteur
+              .play(BytesSource(donnees.buffer.asUint8List()))
+              .catchError((Object e) => debugPrint('[Alerte] bip KO: $e'));
+        });
+      }, onError: (Object e) {
+        // Repli : AssetSource classique si rootBundle echoue.
+        debugPrint('[Alerte] asset KO ($e), repli AssetSource');
+        lecteur.play(AssetSource(cheminBip)).catchError((Object e2) {
+          debugPrint('[Alerte] bip repli KO: $e2');
+        });
+      });
+    } catch (e) {
+      debugPrint('[Alerte] bip exception: $e');
     }
   }
 
