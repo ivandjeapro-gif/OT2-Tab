@@ -399,6 +399,23 @@ class _TopBar extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Test direct de la voix off : deverrouille l'audio du
+                // navigateur web (autoplay policy) puis fait parler le TTS.
+                // Utile des l'arrivee sur l'ecran, sans attendre une alerte.
+                IconButton(
+                  tooltip: 'Tester la voix off',
+                  icon: Icon(
+                    Icons.volume_up,
+                    size: 26 * k,
+                    color: AppColors.ink,
+                  ),
+                  onPressed: () async {
+                    session.alerter.deverrouillerAudioWeb();
+                    await session.alerter
+                        .dire('Test de la voix off, alerte trajet operationnelle');
+                  },
+                ),
+                SizedBox(width: 6 * k),
                 BleStatusBadge(
                   etat: session.etatBleAffiche,
                   nombreClients: session.liensBle,
