@@ -82,7 +82,7 @@ class SupervisionReseau extends StatelessWidget {
               ),
               _Etiquette(
                 k: k,
-                icone: Icons.lan,
+                icone: Icons.wifi,
                 etat: session.etatWifiP2p,
                 texte: session.wifiActif
                     ? (session.liensWifi > 0

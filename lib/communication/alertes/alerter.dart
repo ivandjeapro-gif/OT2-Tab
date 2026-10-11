@@ -1,8 +1,16 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:web/web.dart' as web;
 import 'package:vibration/vibration.dart';
+
+// dart:io n'existe pas sur le web : import conditionnel, seules les
+// references arentes par kIsWeb y sont evaluees.
+import 'io_stub.dart'
+    if (dart.library.io) 'dart:io' show Platform;
 
 /// Canal d'alerte sonore et vibratoire (choix terrain : signal a chaque
 /// mesure GPS tant que le DT reste hors du parcours).
@@ -11,9 +19,14 @@ import 'package:vibration/vibration.dart';
 /// [AlerteFactice] et comptent les declenchements au lieu d'attendre un
 /// materiel qui vibre.
 abstract class AlerteMetier {
-  /// Joue un bip court + une vibration. Ne leve jamais : un capteur absent
-  /// ou une plateforme sans audio n'arrete pas l'application.
+  /// Joue un bip court + une vibration + la voix off du message d'alerte.
+  /// Ne leve jamais : un capteur absent ou une plateforme sans audio
+  /// n'arrete pas l'application.
   void jouer();
+
+  /// Annonce le [message] d'alerte par la synthese vocale (voix off).
+  /// Utilise aussi pour annoncer la sortie/retour sur parcours.
+  Future<void> dire(String message) async {}
 
   /// Libere les ressources systeme (lecteur audio). Vide par defaut.
   void fermer() {}
@@ -23,9 +36,12 @@ abstract class AlerteMetier {
 class AlerteFactice implements AlerteMetier {
   int appels = 0;
 
+  /// Dernier message passe a [dire] (verifie dans les tests).
+  String? dernierMessage;
   @override
   void jouer() => appels++;
-
+  @override
+  Future<void> dire(String message) async => dernierMessage = message;
   @override
   void fermer() {}
 }
@@ -38,13 +54,112 @@ class AlerteSysteme implements AlerteMetier {
 
   /// Fichier WAV joue a chaque declenchemet (asset du package).
   final String cheminBip;
-
   AudioPlayer? _lecteur;
+
+  /// Synthese vocale (voix off). Creee paresseusement : flutter_tts peut
+  /// lever des que l'on touche l'instance sur une plateforme sans moteur TTS.
+  FlutterTts? _tts;
+
+  /// Debounce de la voix off : pendant l'alerte, chaque mesure GPS rejoue
+  /// le bip, mais la phrase complete ne doit pas se chevaucher elle-meme
+  /// toutes les 2 s. Rejouee si le message change.
+  String? _dernierTexte;
+  DateTime _dernierDire = DateTime(2000);
 
   @override
   void jouer() {
     _vibrer();
     _bip();
+  }
+
+  @override
+  Future<void> dire(String message) async {
+    // Anti-spam : meme message pendant 25 s = une seule annonce.
+    final DateTime maintenant = DateTime.now();
+    if (message == _dernierTexte &&
+        maintenant.difference(_dernierDire) < const Duration(seconds: 25)) {
+      return;
+    }
+    _dernierTexte = message;
+    _dernierDire = maintenant;
+
+    try {
+      if (kIsWeb) {
+        // Web : utiliser la Web Speech API et les voix disponibles dans le
+        // navigateur (dont Microsoft Charline fr-BE sur Edge).
+        await _direWeb(message);
+        return;
+      }
+      final FlutterTts tts = _tts ??= FlutterTts();
+      // Voix anglaise : la machine de demonstration n'a que Zira (en-US)
+      // d'installee. Le message d'alerte du DT est ecrit en francais — la
+      // voix le lit avec l'accent, mais il reste audible et comprehensible,
+      // ce qui est le but d'une alerte de trajet.
+      await tts.setLanguage('en-US');
+      await tts.setSpeechRate(0.45);
+      await tts.setVolume(1.0);
+      await tts.setPitch(1.0);
+      await tts.speak(message);
+    } catch (_) {
+      // Pas de moteur TTS (bureau sans voix installee) :
+      // le bip et la vibration restent en place.
+    }
+  }
+
+  /// Voix off sur le web, par la Web Speech API du navigateur.
+  /// Attend le chargement asynchrone des voix avant de choisir la voix
+  /// francaise installee (sur Edge, Charline fr-BE est disponible).
+  Future<void> _direWeb(String message) async {
+    try {
+      final web.SpeechSynthesis synth = web.window.speechSynthesis;
+      synth.cancel();
+
+      web.SpeechSynthesisVoice? voix = _choisirVoixWeb(synth);
+      // Certains navigateurs ne publient leurs voix qu'apres voiceschanged.
+      for (int i = 0; voix == null && i < 20; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        voix = _choisirVoixWeb(synth);
+      }
+
+      final web.SpeechSynthesisUtterance u =
+          web.SpeechSynthesisUtterance(message);
+      if (voix != null) {
+        u.voice = voix;
+        u.lang = voix.lang;
+      } else {
+        u.lang = 'fr-FR';
+      }
+      u.rate = 0.9;
+      u.volume = 1.0;
+      synth.speak(u);
+    } catch (_) {
+      // Navigateur sans synthese vocale : rien, le bip reste en place.
+    }
+  }
+
+  /// Privilegie Charline (fr-BE), puis une voix fr-FR, puis toute voix
+  /// francaise. Repli ensuite sur l'anglais ou la premiere voix disponible.
+  web.SpeechSynthesisVoice? _choisirVoixWeb(web.SpeechSynthesis synth) {
+    final List<web.SpeechSynthesisVoice> liste =
+        (synth.getVoices() as dynamic).toDart;
+    if (liste.isEmpty) return null;
+
+    for (final web.SpeechSynthesisVoice v in liste) {
+      if (v.name.toLowerCase().contains('charline') &&
+          v.lang.toLowerCase().startsWith('fr')) {
+        return v;
+      }
+    }
+    for (final web.SpeechSynthesisVoice v in liste) {
+      if (v.lang.toLowerCase() == 'fr-fr') return v;
+    }
+    for (final web.SpeechSynthesisVoice v in liste) {
+      if (v.lang.toLowerCase().startsWith('fr')) return v;
+    }
+    for (final web.SpeechSynthesisVoice v in liste) {
+      if (v.lang.toLowerCase().startsWith('en')) return v;
+    }
+    return liste.first;
   }
 
   void _vibrer() {
@@ -64,7 +179,11 @@ class AlerteSysteme implements AlerteMetier {
     // try/catch partout : y compris l'acces a [Platform], indisponible sur
     // certaines cibles — `jouer()` ne doit jamais lever.
     try {
-      if (!Platform.isAndroid && !Platform.isIOS && !Platform.isWindows) {
+      // Le web est autorise : audioplayers lit les assets via un blob URL.
+      if (!kIsWeb &&
+          !Platform.isAndroid &&
+          !Platform.isIOS &&
+          !Platform.isWindows) {
         return;
       }
       final AudioPlayer lecteur = _lecteur ??= AudioPlayer();
@@ -81,5 +200,14 @@ class AlerteSysteme implements AlerteMetier {
   void fermer() {
     _lecteur?.dispose();
     _lecteur = null;
+    try {
+      _tts?.stop();
+    } catch (_) {}
+    _tts = null;
+    if (kIsWeb) {
+      try {
+        web.window.speechSynthesis.cancel();
+      } catch (_) {}
+    }
   }
 }

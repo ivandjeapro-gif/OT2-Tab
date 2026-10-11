@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -10,6 +9,7 @@ import '../communication/ble/transport_central.dart';
 import '../communication/ble/transport_peripherique.dart';
 import '../communication/alertes/alerter.dart';
 import '../communication/position/detection_ecart.dart';
+import '../communication/position/progression.dart';
 import '../communication/position/service_position.dart';
 import '../communication/wifi/transport_tcp.dart';
 import '../communication/wifi/transport_wifi.dart';
@@ -50,6 +50,12 @@ class Session extends ChangeNotifier {
   /// pures mathematiques, il ne connait ni le reseau ni le materiel.
   final DetecteurEcart detecteurEcart = DetecteurEcart();
 
+  /// Calculateur de progression le long du meme parcours (CDC §4.6) : a
+  /// chaque mesure GNSS, la position est projetee sur la polyline recue du
+  /// serveur. C'est la valeur reelle que lisent la barre de trajet et la
+  /// carte de l'ecran DT (plus aucune simulation).
+  final CalculateurProgression progression = CalculateurProgression();
+
   /// Base de donnees locale. Les listes deroulantes de l'ecran spotter lisent
   /// dedans, et aucune modification ne la contourne. Injectable pour que les
   /// tests y injectent des blasts de demo (`BaseLocale.blastsDemo()`).
@@ -83,6 +89,7 @@ class Session extends ChangeNotifier {
     if (base.numerosBlast.isNotEmpty) {
       selectionnerBlast(base.numerosBlast.first);
     }
+    demo = demoOffroad;
     if (demoOffroad) {
       await _preparerDemoOffroad();
     }
@@ -98,36 +105,62 @@ class Session extends ChangeNotifier {
     // AVANT le demarrage : la premiere mesure ne peut pas passer a cote.
     servicePosition = ServicePosition(
       base: base,
-      fournisseur: demoOffroad ? GpsDemoOffroad() : null,
+      fournisseur: demoOffroad
+          ? GpsDemoOffroad(
+              figerAlerte: true,
+              // Depart du scÃ©nario = le DEPOT connu de la base, en UTM : le
+              // DT simulÃ© part du meme point que la carte affiche.
+              eastingDepart: _demoEastingDepart,
+              northingDepart: _demoNorthingDepart,
+            )
+          : null,
       intervalle: _intervalleGps,
       filtreDistance: _filtreGps,
     );
     _subMesures ??= servicePosition!.mesures.listen(traiterMesure);
     servicePosition!.demarrer();
     if (demoOffroad) {
-      push('MODE DEMO OFFROAD actif - scenario de sortie de parcours en boucle');
+      push('Scenario de demonstration : sortie de parcours en cours');
     }
   }
 
   /// Preparatifs du mode démo : parcours fictif + affectation complète,
   /// pour que la détection d'écart (option B) trouve ses données.
   Future<void> _preparerDemoOffroad() async {
-    // Parcours en ligne droite vers la dumping area (UTM, metres).
-    const String parcours =
-        '[[320453,920443],[320503,920443],[320553,920443],'
-        '[320603,920443],[320653,920443],[320703,920443],'
-        '[320753,920443],[320803,920443],[320853,920443],'
-        '[320903,920443],[320953,920443],[321003,920443],'
-        '[321053,920443],[321103,920443],[321153,920443],'
-        '[321203,920443],[321253,920443],[321303,920443],'
-        '[321353,920443],[321403,920443],[321453,920443],'
-        '[321503,920443],[321553,920443],[321603,920443]]';
+    // Parcours construit entre les points connus de la base (DEPOT -> F5M),
+    // convertis en UTM par la meme projection que les mesures GNSS : la carte
+    // superpose ainsi parcours, position du DT et drapeau au meme endroit des
+    // tuiles OpenStreetMap.
+    final ({double lat, double lng})? depot =
+        base.positionDe(BaseLocale.codeDepart);
+    final ({double lat, double lng})? arrivee = base.positionDe('F5M');
+    final (int e0, int n0) = depot == null
+        ? (487380, 5056620)
+        : Utm.depuisWgs84(depot.lat, depot.lng);
+    final (int e1, int n1) = arrivee == null
+        ? (493170, 5057120)
+        : Utm.depuisWgs84(arrivee.lat, arrivee.lng);
+    final StringBuffer trace = StringBuffer('[[$e0,$n0]');
+    for (int i = 1; i <= 24; i++) {
+      final double t = i / 24;
+      trace.write(',[${(e0 + t * (e1 - e0)).round()},'
+          '${(n0 + t * (n1 - n0)).round()}]');
+    }
+    final String parcours = '${trace.toString()}]';
     await base.enregistrerAffectation(<String, String>{
       'destination': 'F5M',
       'dumping_area': 'RomPad 1',
       'parcours': parcours,
     });
+    // Le GPS simule part du DEPOT : la position du DT et le parcours vivent
+    // au meme endroit de la carte.
+    _demoEastingDepart = e0;
+    _demoNorthingDepart = n0;
   }
+  /// Depart UTM du scÃ©nario GPS de dÃ©mo, pose par [_preparerDemoOffroad]
+  /// d'apres le point DEPOT de la base (zone UTM 31 du site de reference).
+  int _demoEastingDepart = 487380;
+  int _demoNorthingDepart = 5056620;
 
   /// Service de position du device (CDC §5) : demarre a l'ouverture de la
   /// base, arrete a la fermeture de la session.
@@ -142,8 +175,12 @@ class Session extends ChangeNotifier {
   Profil? profile;
   String deviceId = '';
   String deviceName = '';
-
   bool masterConnected = false;
+  /// Vrai quand la session tourne en mode DEMONSTRATION (5 taps sur le logo).
+  /// Les badges reseau et le texte d'alerte suivent alors des valeurs posees
+  /// a la main, pour un rendu de presentation stable et lisible — sans
+  /// dependre de la vraie connectivite (Wi-Fi/BLE souvent absents en demo).
+  bool demo = false;
 
   /// Etat de la 4G (§15). Une coupure ne perd rien : elle arrete seulement
   /// les envois, la file reste en place et reprend seule au retablissement.
@@ -271,6 +308,22 @@ class Session extends ChangeNotifier {
     return service.derniere == null ? EtatCouche.recherche : EtatCouche.connecte;
   }
 
+  // ------------------------------------------------------ etats simules (demo)
+  // En mode DEMONSTRATION, les quatre badges de la barre du DT suivent des
+  // valeurs imposees (4G vert, BLE rouge, Wi-Fi rouge, GPS orange) : le rendu
+  // de presentation ne depend plus de la vraie connectivite du poste, souvent
+  // absente quand on presente hors du site. Hors demo, chaque getter retombe
+  // sur l'etat reel mesure ci-dessus.
+  /// Badge 4G de la barre DT : vert en demo, sinon [etat4G].
+  EtatCouche get etat4GAffiche => demo ? EtatCouche.connecte : etat4G;
+  /// Badge BLE de la barre DT : rouge en demo, sinon [etatBle].
+  EtatCouche get etatBleAffiche => demo ? EtatCouche.arret : etatBle;
+  /// Badge Wi-Fi (hotspot) de la barre DT : rouge en demo, sinon [etatWifiP2p].
+  EtatCouche get etatWifiAffiche => demo ? EtatCouche.arret : etatWifiP2p;
+  /// Badge GPS de la barre DT : orange en demo (acquisition en cours),
+  /// sinon [etatGps].
+  EtatCouche get etatGpsAffiche => demo ? EtatCouche.recherche : etatGps;
+
   /// Badge 4G : retour effectif du serveur (CDC §21).
   ///
   /// Rouge si la boucle de synchro n'a pas ete lancee ou si aucune voie de
@@ -308,6 +361,7 @@ class Session extends ChangeNotifier {
     if (!wifiActif) return EtatCouche.arret;
     return liensWifi > 0 ? EtatCouche.connecte : EtatCouche.recherche;
   }
+
 
   /// Nombre de liens Wi-Fi P2P authentifies (gateway pour le DT, client
   /// pour le spotter).
@@ -462,22 +516,105 @@ class Session extends ChangeNotifier {
   ({double lat, double lng})? get positionDestination =>
       base.positionDe(destination);
 
-  /// Position du DT sur son trajet : interpolation entre le depart et la
-  /// destination a l'avancement [routeProgress].
+  /// Derniere mesure GNSS connue (easting/northing UTM + WGS84 source).
   ///
-  /// On ne convertit pas les easting/northing simules : la carte et la barre
-  /// de trajet doivent raconter la meme histoire, donc les deux lisent la
-  /// meme table et le meme avancement.
-  ({double lat, double lng})? get positionDt {
-    final ({double lat, double lng})? depart = positionDepart;
-    final ({double lat, double lng})? arrivee = positionDestination;
-    if (depart == null || arrivee == null) return null;
+  /// La carte de suivi lit ici la position reelle du device — plus aucune
+  /// interpolation : tant qu'aucune mesure n'est disponible, la carte ne
+  /// dessine pas de camion plutot que d'en dessiner un fictif.
+  PositionTerrain? get derniereMesure => servicePosition?.derniere;
 
-    final double t = routeProgress.clamp(0.0, 1.0).toDouble();
-    return (
-      lat: depart.lat + (arrivee.lat - depart.lat) * t,
-      lng: depart.lng + (arrivee.lng - depart.lng) * t,
+  /// Position reelle du DT (WGS84), pour la carte de suivi.
+  ({double lat, double lng})? get positionDt {
+    final ({double lat, double lng})? wgs = derniereMesure?.wgs84;
+    if (wgs != null) return wgs;
+    // Repli : conversion UTM -> WGS84 de la derniere mesure (demo offroad,
+    // qui ne produit pas de WGS84). Approximation suffisante a l'echelle
+    // d'un site (zone UTM unique, deformation << 0,1 % sur quelques km).
+    final PositionTerrain? mesure = derniereMesure;
+    if (mesure == null) return null;
+    return Utm.versWgs84(mesure.easting, mesure.northing);
+  }
+
+  /// Polyline du parcours recu du serveur, convertie en WGS84 pour la carte
+  /// (CDC §4 : le champ `parcours` arrive en metres UTM). Le fuseau est le
+  /// meme que celui des mesures GNSS — deduit une seule fois de la premiere
+  /// mesure connue.
+  List<({double lat, double lng})>? get parcoursCarte {
+    final List<PointParcours>? points =
+        CalculateurProgression.parser(base.affectation('parcours'));
+    if (points == null || points.length < 2) return null;
+    final int zone = _zoneUtm;
+    return points
+        .map((PointParcours p) =>
+            Utm.versWgs84(p.easting.round(), p.northing.round(), zone: zone))
+        .toList();
+  }
+
+  /// Portion deja parcourue de la polyline, pour la ligne verte de la carte :
+  /// du depart jusqu'au point projete de la derniere mesure GNSS.
+  List<({double lat, double lng})>? get parcoursParcouruCarte {
+    final List<({double lat, double lng})>? complet = parcoursCarte;
+    final PositionTerrain? mesure = derniereMesure;
+    if (complet == null || mesure == null) return null;
+
+    // Projection de la mesure sur chaque segment, comme dans le calculateur :
+    // on retrouve le segment courant et le point projete exact.
+    final List<PointParcours>? points =
+        CalculateurProgression.parser(base.affectation('parcours'));
+    if (points == null || points.length < 2) return null;
+
+    double meilleure = double.infinity;
+    int indexSegment = 0;
+    double tSegment = 0;
+    for (int i = 0; i < points.length - 1; i++) {
+      final PointParcours a = points[i];
+      final PointParcours b = points[i + 1];
+      final double dx = b.easting - a.easting;
+      final double dy = b.northing - a.northing;
+      final double longueur2 = dx * dx + dy * dy;
+      double t = 0;
+      if (longueur2 > 0) {
+        t = ((mesure.easting - a.easting) * dx +
+                (mesure.northing - a.northing) * dy) /
+            longueur2;
+        t = t.clamp(0.0, 1.0).toDouble();
+      }
+      final double px = a.easting + t * dx;
+      final double py = a.northing + t * dy;
+      final double d = (mesure.easting - px) * (mesure.easting - px) +
+          (mesure.northing - py) * (mesure.northing - py);
+      if (d < meilleure) {
+        meilleure = d;
+        indexSegment = i;
+        tSegment = t;
+      }
+    }
+
+    // Trace tronque : tous les sommets jusqu'au segment courant, puis le
+    // point projete exact — la ligne verte s'arrete LA, pas au sommet.
+    final int zone = _zoneUtm;
+    final PointParcours a = points[indexSegment];
+    final PointParcours b = points[indexSegment + 1];
+    final PointParcours proj = (
+      easting: a.easting + tSegment * (b.easting - a.easting),
+      northing: a.northing + tSegment * (b.northing - a.northing),
     );
+    return <({double lat, double lng})>[
+      for (int i = 0; i <= indexSegment; i++)
+        Utm.versWgs84(
+            points[i].easting.round(), points[i].northing.round(),
+            zone: zone),
+      Utm.versWgs84(proj.easting.round(), proj.northing.round(), zone: zone),
+    ];
+  }
+
+  /// Fuseau UTM du site : deduit de la derniere mesure GNSS (celle qui a
+  /// servi a la conversion WGS84 -> UTM). Sans mesure, fuseau 31 par defaut
+  /// — le meme que [Utm.versWgs84].
+  int get _zoneUtm {
+    final ({double lat, double lng})? wgs = derniereMesure?.wgs84;
+    if (wgs != null) return (((wgs.lng + 180) / 6).floor() + 1).clamp(1, 60);
+    return 31;
   }
 
   /// Ajoute une ligne au bloc courant, via la base.
@@ -564,7 +701,14 @@ class Session extends ChangeNotifier {
   int elevation = 260;
 
   int syncCount = 0;
-  double routeProgress = 0.62;
+
+  /// Progression du trajet, calculee localement (CDC §4.6) par la
+  /// projection de la position GNSS sur la polyline recue du serveur.
+  ///
+  /// Sans parcours valide (affectation non recue, serveur hors ligne) elle
+  /// reste a zero : la barre affiche le depart plutot qu'un avancement
+  /// invente.
+  double get routeProgress => progression.progression;
 
   /// Destination courante : choisie **et validee par le serveur**.
   ///
@@ -586,6 +730,14 @@ class Session extends ChangeNotifier {
   /// le repli `alerte` du serveur prend le relais quand aucun parcours n'a
   /// ete recu. Vide = rien a afficher.
   String get alerteCourante {
+    // Mode DEMONSTRATION : l'alerte est affichee des l'ouverture de l'ecran,
+    // sans attendre que le scenario GPS franchisse le seuil — le rendu de
+    // presentation (cadre rouge clignotant, bandeau, bip) est stable du debut
+    // a la fin.
+    if (demo) {
+      return 'DT 05 a fait une sortie de route, retourner et prendre '
+          'le chemin du RomPad 1';
+    }
     if (detecteurEcart.actif && detecteurEcart.horsParcours) {
       final int ecart = (detecteurEcart.derniereDistance ?? 0).round();
       final String cible = dumpingArea.isEmpty ? 'la dumping area' : dumpingArea;
@@ -616,17 +768,41 @@ class Session extends ChangeNotifier {
       maintenant: mesure.horodatage ?? DateTime.now(),
     );
 
+    // Progression (CDC §4.6) : meme source, meme parser, meme parcours que
+    // la detection d'ecart. La barre de trajet et la carte lisent le
+    // resultat de ce calcul, la boucle de fond n'invente plus rien.
+    progression.parcours(base.affectation('parcours'));
+    progression.evaluer(
+      easting: mesure.easting.toDouble(),
+      northing: mesure.northing.toDouble(),
+    );
+
+    // Les tableaux de l'ecran DT suivent la mesure reelle.
+    easting = mesure.easting;
+    northing = mesure.northing;
+    elevation = mesure.elevation;
+
+    // CHAQUE mesure est notifiee : les tableaux et la carte se repeignent a
+    // chaud a chaque changement de position (hot reload des valeurs GNSS),
+    // meme sans alerte. Le push ci-dessous notifie deja, sauf sur les
+    // branches ou l'etat d'alerte n'a pas change — on assure donc une
+    // notification systematique ici.
+    notifyListeners();
+
     final bool actif = alerteActive;
     if (actif) alerter.jouer();
 
     if (actif != _alerteActive) {
       _alerteActive = actif;
       if (actif) {
-        // Front montant : le journal raconte l'entree en alerte.
+        // Front montant : le journal raconte l'entree en alerte, et la voix
+        // off lit le message affiche (le bip, lui, a deja sonne ci-dessus).
         push('Alerte trajet - $alerteCourante');
+        unawaited(alerter.dire(alerteCourante));
         return; // push a deja notifie les ecrans.
       }
-      // Retour au calme : plus rien a dessiner.
+      // Retour au calme : la voix off confirme le retour sur parcours.
+      unawaited(alerter.dire('Retour sur le parcours, bonne route'));
       notifyListeners();
     } else if (actif) {
       // Deja en alerte depuis plusieurs mesures : rafraichit l'ecart affiche.
@@ -942,11 +1118,9 @@ class Session extends ChangeNotifier {
     syncCount++;
     // La boucle de fond ne simule plus rien : les positions viennent du GPS
     // reel (ServicePosition), la synchro serveur du worker (Synchronisation)
-    // qui pousse ses propres messages. L'avancement du trajet reste gere ici
-    // (territore de l'ecran DT).
-    if (routeProgress < 0.95) {
-      routeProgress = min(0.95, routeProgress + 0.03);
-    }
+    // qui pousse ses propres messages, et la progression du trajet est
+    // calculee localement par projection GNSS sur la polyline recue
+    // (CalculateurProgression, CDC §4.6) — voir [traiterMesure].
     notifyListeners();
   }
 

@@ -84,7 +84,7 @@ class DetecteurEcart {
   void parcours(String? brut) {
     if (brut == _brut) return;
     _brut = brut;
-    _points = _parser(brut);
+    _points = parserPolyline(brut);
     // Nouveau trajet = nouvelle histoire : pas de reliquat de l'ancien.
     _horsParcours = false;
     _depuis = null;
@@ -92,7 +92,11 @@ class DetecteurEcart {
   }
 
   /// Decode `[[easting, northing], …]` : au moins deux points numeriques.
-  static List<PointParcours>? _parser(String? brut) {
+  /// Decode une polyline `[[easting, northing], …]` recue du serveur.
+  ///
+  /// Public car le calculateur de progression ([progression.dart]) lit le
+  /// meme champ `parcours` : un seul parser, un seul format.
+  static List<PointParcours>? parserPolyline(String? brut) {
     if (brut == null || brut.isEmpty) return null;
     try {
       final Object? brut2 = jsonDecode(brut);

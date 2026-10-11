@@ -70,6 +70,8 @@ dependencies:
   vibration: ^3.1.8
   audioplayers: ^6.7.1
   flutter_screenutil: ^5.9.3
+  flutter_tts: ^4.2.5
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

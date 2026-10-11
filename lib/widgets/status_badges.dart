@@ -348,7 +348,9 @@ class BleStatusBadge extends StatelessWidget {
 ///
 /// Distincte de [WifiStatusBadge] : celle-la montre l'etat du reseau local
 /// (point d'acces Master), celle-ci l'etat de la couche applicative TCP
-/// (serveur DT ou client spotter) posee par-dessus.
+/// (serveur DT ou client spotter) posee par-dessus. Meme glyph [Icons.wifi]
+/// que l'autre voyant wifi : c'est le libelle (compteur Spotter) qui
+/// distingue les deux.
 class WifiP2pStatusBadge extends StatelessWidget {
   const WifiP2pStatusBadge({
     super.key,
@@ -380,13 +382,15 @@ class WifiP2pStatusBadge extends StatelessWidget {
     final Color color = etat.couleur;
     return _BoiteBadge(
       taille: mise.tailleBadge,
-      couleur: AppColors.border,
+      // Meme couleur que l'interieur : le cadre suit l'etat (rouge/orange/vert)
+      // au lieu d'un gris fixe, pour se lire comme les autres voyants.
+      couleur: color,
       epaisseur: (2 * k).clamp(1.0, 2.0),
       enfant: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.lan, size: (46 * k).clamp(20.0, 46.0), color: color),
+          Icon(Icons.wifi, size: (46 * k).clamp(20.0, 46.0), color: color),
           SizedBox(height: (4 * k).clamp(2.0, 4.0)),
           Text(
             _libelleConnecte,
