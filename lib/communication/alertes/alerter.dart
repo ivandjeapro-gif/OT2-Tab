@@ -91,11 +91,11 @@ class AlerteSysteme implements AlerteMetier {
         return;
       }
       final FlutterTts tts = _tts ??= FlutterTts();
-      // Voix anglaise : la machine de demonstration n'a que Zira (en-US)
-      // d'installee. Le message d'alerte du DT est ecrit en francais — la
-      // voix le lit avec l'accent, mais il reste audible et comprehensible,
-      // ce qui est le but d'une alerte de trajet.
-      await tts.setLanguage('en-US');
+      // Android embarque Google TTS : voix francaise native disponible.
+      // Sur Windows on garde en-US (Zira, la seule voix de la machine de
+      // demonstration) ; le message reste audible et comprehensible.
+      final String langue = (!kIsWeb && Platform.isAndroid) ? 'fr-FR' : 'en-US';
+      await tts.setLanguage(langue);
       await tts.setSpeechRate(0.45);
       await tts.setVolume(1.0);
       await tts.setPitch(1.0);
