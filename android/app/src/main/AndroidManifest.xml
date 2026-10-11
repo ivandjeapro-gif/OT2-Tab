@@ -70,5 +70,11 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Synthese vocale (flutter_tts) : depuis Android 11, interroger le
+             moteur TTS du systeme exige cette declaration. Sans elle, la
+             voix off reste muette sur les tablettes Android >= 30. -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
     </queries>
 </manifest>

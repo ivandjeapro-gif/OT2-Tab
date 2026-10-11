@@ -28,6 +28,10 @@ abstract class AlerteMetier {
   /// Utilise aussi pour annoncer la sortie/retour sur parcours.
   Future<void> dire(String message) async {}
 
+  /// Deverrouille l'audio du navigateur web (autoplay policy). No-op hors
+  /// web ; a appeler sur le premier tap utilisateur.
+  void deverrouillerAudioWeb() {}
+
   /// Libere les ressources systeme (lecteur audio). Vide par defaut.
   void fermer() {}
 }
@@ -42,6 +46,8 @@ class AlerteFactice implements AlerteMetier {
   void jouer() => appels++;
   @override
   Future<void> dire(String message) async => dernierMessage = message;
+  @override
+  void deverrouillerAudioWeb() {}
   @override
   void fermer() {}
 }
@@ -66,6 +72,33 @@ class AlerteSysteme implements AlerteMetier {
   String? _dernierTexte;
   DateTime _dernierDire = DateTime(2000);
 
+  /// Deverrouillage audio du navigateur web.
+  ///
+  /// Chrome et Edge bloquent speechSynthesis.speak() tant que l'utilisateur
+  /// n'a pas interagi avec la page : une alerte declenchee automatiquement
+  /// au chargement est rejetee silencieusement. On spoke une utterance vide
+  /// sur le premier tap pour deverrouiller le contexte audio ; ensuite les
+  /// alertes passent sans interaction.
+  bool _audioDebloqueWeb = false;
+
+  /// Deverrouille l'audio du navigateur. A appeler sur le premier tap de
+  /// l'utilisateur (GestureRecognizer / onTapDown de l'ecran d'accueil).
+  @override
+  void deverrouillerAudioWeb() {
+    if (!kIsWeb || _audioDebloqueWeb) return;
+    try {
+      final web.SpeechSynthesis synth = web.window.speechSynthesis;
+      final web.SpeechSynthesisUtterance u =
+          web.SpeechSynthesisUtterance(' ');
+      u.volume = 0.0;
+      u.rate = 10.0; // quasi instantane
+      synth.speak(u);
+      _audioDebloqueWeb = true;
+    } catch (_) {
+      // Navigateur sans synthese : rien a deverrouiller.
+    }
+  }
+
   @override
   void jouer() {
     _vibrer();
@@ -86,7 +119,10 @@ class AlerteSysteme implements AlerteMetier {
     try {
       if (kIsWeb) {
         // Web : utiliser la Web Speech API et les voix disponibles dans le
-        // navigateur (dont Microsoft Charline fr-BE sur Edge).
+        // navigateur (dont Microsoft Charline fr-BE sur Edge). Si l'audio
+        // n'a pas encore ete deverrouille par un tap, sSpeak est rejete :
+        // on retente apres avoir force le deverrouillage.
+        if (!_audioDebloqueWeb) deverrouillerAudioWeb();
         await _direWeb(message);
         return;
       }

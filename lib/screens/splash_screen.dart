@@ -46,6 +46,9 @@ class _SplashScreenState extends State<SplashScreen>
   /// 5 taps sur le logo = mode demo. La base est reouverte avec le scenario :
   /// ouvrirBase remplace le service de position avant le premier ecran.
   void _tapLogo() {
+    // Premier tap = deverrouillage de l'audio du navigateur web : sans lui,
+    // Chrome/Edge rejettent speechSynthesis.speak() des alertes automatiques.
+    widget.session.alerter.deverrouillerAudioWeb();
     _taps++;
     if (_taps >= 5 && !demoOffroad) {
       demoOffroad = true;
