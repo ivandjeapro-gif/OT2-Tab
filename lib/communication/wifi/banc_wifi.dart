@@ -17,8 +17,8 @@ class BancWifi {
   final CoteGatewayWifi coteGateway = CoteGatewayWifi._();
   final CoteClientWifi coteClient = CoteClientWifi._();
 
-  /// Fait "entrer dans la zone" : TAB 2 devient visible du client.
-  void tab2Present({String ssid = 'ORE-TAB2-001'}) {
+  /// Fait "entrer dans la zone" : l'emetteur (excavatrice) devient visible.
+  void tab2Present({String ssid = 'ORE-EXC-001'}) {
     coteClient._reseauxVisibles
       ..clear()
       ..add(ReseauWifi(ssid: ssid, adresse: '192.168.49.1', puissance: -40));

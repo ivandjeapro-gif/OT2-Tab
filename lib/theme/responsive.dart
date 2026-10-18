@@ -115,6 +115,16 @@ class MiseEnPage {
   factory MiseEnPage.depuis(BuildContext context) =>
       MiseEnPage.pour(MediaQuery.sizeOf(context));
 
+  /// Vrai quand l'ecran est trop etroit ou trop bas pour le layout etale.
+  ///
+  /// Meme regle que celle employee dans `MiseEnPage.pour` pour choisir entre
+  /// cote-a-cote et empile, exposee comme helper top-level pour qu'un widget
+  /// puisse la consulter sans recreer une `MiseEnPage`.
+  static bool estCompactPortrait(BuildContext context) {
+    final Size taille = MediaQuery.sizeOf(context);
+    return taille.width < 760 || taille.height < 720;
+  }
+
   /// Construit la mise en page pour cette taille de fenetre.
   ///
   /// [taille] sert au seul choix qui ne depend pas de l'echelle : empiler ou
@@ -124,7 +134,18 @@ class MiseEnPage {
   /// supplementaire.
   factory MiseEnPage.pour(Size taille) {
     // Seuil d'empilement des deux colonnes, en pixels logiques.
-    final bool empile = taille.width < 760;
+    //
+    // Deux conditions equivalentes :
+    //   1. la fenetre est etroite (< 760 de large) — telephone en paysage
+    //      ou petite fenetre partagee ;
+    //   2. la fenetre est plus haute que large — tablette tournee en portrait
+    //      ou telephone en portrait.
+    //
+    // La condition 2 evite le rendu degrade observe a 768x1024 (iPad portrait)
+    // ou le mode cote-a-cote coupait les colonnes en plein milieu d'un trait
+    // vertical mal positionne. Un iPad en paysage (> 760 de large et plus large
+    // que haut) garde le cote-a-cote, comme prevu par la maquette.
+    final bool empile = taille.width < 760 || taille.height > taille.width;
 
     return MiseEnPage(
       // `.r` : la plus petite des deux proportions (largeur, hauteur), donc
@@ -141,17 +162,18 @@ class MiseEnPage {
       hauteurLogoSplash: 350.r,
       hauteurEntete: 96.r,
       hauteurTicker: 54.r,
-      // Badge : largeur au petit cote, hauteur au petit cote aussi, sinon la
-      // boite s'aplatit en paysage et le libelle ne passe plus.
-      tailleBadge: Size(150.r, 130.r),
+      // Badge nettement plus compact que la maquette historique (150x130).
+      // L'ecran DT en affiche plusieurs en ligne ; une taille proportionnelle
+      // au petit cote evite qu'ils prennent la largeur sur telephone/tablette.
+      tailleBadge: Size((78 * 1.0.r).clamp(58.0, 88.0), (66 * 1.0.r).clamp(50.0, 72.0)),
       hauteurBandeau: 64.r,
       policeTitre: 34.sp,
       // Espacements : le petit cote (`.r`). En `.h` ils ne depassent pas sur la
       // reference, mais un ecran large et bas (telephone en paysage, rapport
       // 2,2 contre 1,55 pour la tablette) les gardait trop grands et faisait
       // deborder la colonne.
-      ecartTitre: 15.r,
-      ecartSection: 80.r,
+      ecartTitre: 12.r,
+      ecartSection: 50.r,
       // Marge verticale seulement : l'espace horizontal autour du trait est
       // gere par `margeFilet`, sinon les deux marges se cumulent et le trait
       // reste tres eloigne des boutons et des champs.

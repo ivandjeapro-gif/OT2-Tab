@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../state/etat_couche.dart';
@@ -150,17 +152,17 @@ class WifiStatusBadge extends StatelessWidget {
         color: Colors.white,
         border: Border.all(color: AppColors.border, width: (2 * k).clamp(1.0, 2.0)),
       ),
-      padding: EdgeInsets.symmetric(vertical: (16 * k).clamp(6.0, 16.0)),
+      padding: EdgeInsets.symmetric(vertical: (8 * k).clamp(4.0, 8.0)),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.wifi, size: (62 * k).clamp(26.0, 62.0), color: color),
+          Icon(Icons.wifi, size: (38 * k).clamp(18.0, 38.0), color: color),
           SizedBox(height: (8 * k).clamp(3.0, 8.0)),
           Text(
             etat.libelle,
             style: TextStyle(
               fontFamily: kSerif,
-              fontSize: (17 * k).clamp(11.0, 17.0),
+              fontSize: (13 * k).clamp(9.0, 13.0),
               color: color,
               fontWeight: FontWeight.w700,
             ),
@@ -201,7 +203,7 @@ class GpsStatusBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.gps_fixed,
-              size: (46 * k).clamp(20.0, 46.0), color: color),
+              size: (30 * k).clamp(15.0, 30.0), color: color),
           SizedBox(height: (4 * k).clamp(2.0, 4.0)),
           Text(
             etat.libelle,
@@ -209,7 +211,7 @@ class GpsStatusBadge extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontFamily: kSerif,
-              fontSize: (17 * k).clamp(11.0, 17.0),
+              fontSize: (13 * k).clamp(9.0, 13.0),
               color: color,
               fontWeight: FontWeight.w700,
             ),
@@ -253,7 +255,7 @@ class GsmStatusBadge extends StatelessWidget {
               '4G',
               style: TextStyle(
                 fontFamily: kSerif,
-                fontSize: (58 * k).clamp(24.0, 58.0),
+                fontSize: (38 * k).clamp(18.0, 38.0),
                 height: 1,
                 fontWeight: FontWeight.w900,
                 color: color,
@@ -264,7 +266,7 @@ class GsmStatusBadge extends StatelessWidget {
               etat.libelle,
               style: TextStyle(
                 fontFamily: kSerif,
-                fontSize: (17 * k).clamp(11.0, 17.0),
+                fontSize: (13 * k).clamp(9.0, 13.0),
                 color: color,
               ),
             ),
@@ -324,7 +326,7 @@ class BleStatusBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.bluetooth,
-              size: (46 * k).clamp(20.0, 46.0), color: color),
+              size: (30 * k).clamp(15.0, 30.0), color: color),
           SizedBox(height: (4 * k).clamp(2.0, 4.0)),
           Text(
             _libelleConnecte,
@@ -332,7 +334,7 @@ class BleStatusBadge extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontFamily: kSerif,
-              fontSize: (17 * k).clamp(11.0, 17.0),
+              fontSize: (13 * k).clamp(9.0, 13.0),
               color: color,
               fontWeight: FontWeight.w700,
             ),
@@ -348,7 +350,9 @@ class BleStatusBadge extends StatelessWidget {
 ///
 /// Distincte de [WifiStatusBadge] : celle-la montre l'etat du reseau local
 /// (point d'acces Master), celle-ci l'etat de la couche applicative TCP
-/// (serveur DT ou client spotter) posee par-dessus.
+/// (serveur DT ou client spotter) posee par-dessus. Meme glyph [Icons.wifi]
+/// que l'autre voyant wifi : c'est le libelle (compteur Spotter) qui
+/// distingue les deux.
 class WifiP2pStatusBadge extends StatelessWidget {
   const WifiP2pStatusBadge({
     super.key,
@@ -386,7 +390,7 @@ class WifiP2pStatusBadge extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.lan, size: (46 * k).clamp(20.0, 46.0), color: color),
+          Icon(Icons.wifi, size: (30 * k).clamp(15.0, 30.0), color: color),
           SizedBox(height: (4 * k).clamp(2.0, 4.0)),
           Text(
             _libelleConnecte,
@@ -394,7 +398,7 @@ class WifiP2pStatusBadge extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontFamily: kSerif,
-              fontSize: (17 * k).clamp(11.0, 17.0),
+              fontSize: (13 * k).clamp(9.0, 13.0),
               color: color,
               fontWeight: FontWeight.w700,
             ),
@@ -562,14 +566,18 @@ class _SyncCloudIconState extends State<SyncCloudIcon>
             : AppColors.darkSquare,
       );
     }
-    return Container(
-      width: cote,
-      height: cote,
-      color: Colors.white,
-      alignment: Alignment.center,
-      child: enSynchro
-          ? RotationTransition(turns: _rotation, child: icone)
-          : icone,
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => unawaited(widget.session.synchroniserManuellement()),
+      child: Container(
+        width: cote,
+        height: cote,
+        color: Colors.white,
+        alignment: Alignment.center,
+        child: enSynchro
+            ? RotationTransition(turns: _rotation, child: icone)
+            : icone,
+      ),
     );
   }
 }

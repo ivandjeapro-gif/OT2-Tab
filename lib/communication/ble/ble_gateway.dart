@@ -154,8 +154,11 @@ class BleGateway {
       onError: (Object _) => _deconnexion(id),
     );
     await lien.envoyer(
-        BleProtocole.encoder(BleProtocole.handshakeOk(gatewayId: 'TAB2-001')));
+        BleProtocole.encoder(BleProtocole.handshakeOk(gatewayId: 'EXC-001')));
     _journal.ligne('BLE $id connecte (role $role, RSSI $rssi)');
+    // Un DT vient d'entrer dans le rayon : la couche au-dessus ouvre sa
+    // session perle (§2.3).
+    surConnexion?.call(id);
   }
 
   /// Traite un message applicatif d'un TAB 3 deja authentifie.
@@ -169,10 +172,13 @@ class BleGateway {
       case BleProtocole.typeEvenement:
         surEvenement?.call(id, message);
         break;
+      case BleProtocole.typeNotification:
+        surNotification?.call(message);
+        break;
       case BleProtocole.typePing:
         // Reponse echo : le client en deduit la vitalite du lien.
         _liens[id]?.envoyer(BleProtocole.encoder(
-            BleProtocole.ping('TAB2-001')));
+            BleProtocole.ping('EXC-001')));
         break;
       default:
         _journal.ligne('BLE $id : type inconnu ${message['type']}');
@@ -183,6 +189,18 @@ class BleGateway {
   /// Retourne le message recu pour que l'appellant pose l'ACK.
   void Function(String source, Map<String, Object?> evenement)? surEvenement;
 
+  /// Notification serveur recue d'un client (diffusee par la session DT
+  /// excavatrice vers tous ses clients, dont TAB 1 spotter).
+  void Function(Map<String, Object?> notification)? surNotification;
+
+  /// Appareil accepte dans la zone : la couche au-dessus ouvre la session de
+  /// collecte (profil excavator §2.3 : "chaque connexion" journalisee).
+  void Function(String source)? surConnexion;
+
+  /// Appareil sorti de la zone ou deconnecte : la couche au-dessus gelee la
+  /// moyenne de la session et la remet a zero (§2.3 : "decollage").
+  void Function(String source)? surDeconnexion;
+
   /// Envoie un ACK a l'appareil source (idempotence CDC §17).
   Future<void> acquitter(String source, String eventId) async {
     final LienBle? lien = _liens[source];
@@ -190,11 +208,26 @@ class BleGateway {
     await lien.envoyer(BleProtocole.encoder(BleProtocole.ack(eventId: eventId)));
   }
 
+  /// Diffuse une notification a TOUS les clients authentifies (le DT
+  /// excavatrice relaie le canal serveur vers les spotters presents).
+  Future<void> diffuserNotification(Map<String, Object?> notification) async {
+    for (final LienBle lien in _liens.values) {
+      try {
+        await lien.envoyer(BleProtocole.encoder(notification));
+      } catch (_) {
+        // Lien parti : le client rattrapera par le curseur HTTP.
+      }
+    }
+  }
+
   void _deconnexion(String id) {
     _subs.remove(id)?.cancel();
     _liens.remove(id);
     _proximite.oublier(id);
     _journal.ligne('BLE $id deconnecte');
+    // Sortie de zone ("decollage") : la couche au-dessus gelee la moyenne
+    // de la session perle et la remet a zero.
+    surDeconnexion?.call(id);
   }
 
   /// Mesure et journalise le RSSI de chaque lien (CDC §22) : a appeler
@@ -260,20 +293,25 @@ class BleClient {
   /// Evenements acquittes par TAB 2 : la couche au-dessus purge la file.
   void Function(String eventId)? surAck;
 
-  /// Demarre la decouverte et la connexion a TAB 2.
+  /// Notification serveur recue sur le lien BLE (Boss -> DT -> spotter) :
+  /// la couche au-dessus la stocke en base et l'affiche (bandeau rouge).
+  void Function(Map<String, Object?> notification)? surNotification;
+
+  /// Demarre la decouverte et la connexion a l'excavatrice (emetteur).
   ///
-  /// Retourne des que connecte et authentifie, ou apres [delai] si TAB 2 est
-  /// absent — l'appelant retentera (REQ-018). Ne leve pas d'exception.
+  /// Retourne des que connecte et authentifie, ou apres [delai] si
+  /// l'excavatrice est absente — l'appelant retentera (REQ-018). Ne leve pas
+  /// d'exception.
   Future<bool> connecter({Duration delai = const Duration(seconds: 10)}) async {
     AppareilBle? cible;
     await for (final AppareilBle a in transport.scanner()) {
-      if (a.nom.startsWith('ORE-TAB2')) {
+      if (a.nom.startsWith('ORE-EXC')) {
         cible = a;
         break;
       }
     }
     if (cible == null) {
-      _journal.ligne('BLE TAB2 non trouve : nouvelle tentative plus tard');
+      _journal.ligne('BLE excavatrice non trouvee : nouvelle tentative plus tard');
       return false;
     }
     try {
@@ -361,6 +399,11 @@ class BleClient {
       fileAttente.removeWhere((e) => e['event_id'] == id);
       surAck?.call(id);
       _journal.ligne('BLE ACK recu pour $id');
+    } else if (m['type'] == BleProtocole.typeNotification) {
+      // Boss -> serveur -> DT -> ici : notification recue par le lien local,
+      // la couche au-dessus la stocke et l'affiche (bandeau rouge).
+      surNotification?.call(m);
+      _journal.ligne('BLE notification recue #${m['id']}');
     }
   }
 

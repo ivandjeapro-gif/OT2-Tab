@@ -86,7 +86,11 @@ class DtScreen extends StatelessWidget {
                                     ),
                             ),
                             SizedBox(height: 14 * mise.k),
-                            _RouteBar(progress: session.routeProgress),
+                            _RouteBar(
+                              progress: session.routeProgress,
+                              fractionWaypoint:
+                                  session.progression.fractionWaypoint,
+                            ),
                             SizedBox(height: 6 * mise.k),
                           ],
                         ),
@@ -123,6 +127,8 @@ class _Carte extends StatelessWidget {
       depart: session.positionDepart,
       arrivee: arrivee,
       position: session.positionDt,
+      parcours: session.parcoursCarte,
+      positionParcourue: session.parcoursParcouruCarte,
       libelleDestination: session.destination,
     );
   }
@@ -195,11 +201,19 @@ class _Valeurs extends StatelessWidget {
               'Northing',
               'Elevation',
             ],
-            values: [
-              '${session.easting}',
-              '${session.northing}',
-              '${session.elevation}',
-            ],
+            // Valeurs GNSS reelles ou « — » tant qu'aucune mesure n'est
+            // arrivee : un tiret honnete (acquisition en cours, GPS absent
+            // ou permission refusee) plutot que des coordonnees de demarrage
+            // en dur qui feraient croire a une position. Sous Chrome, le
+            // service ne produit une mesure que si l'ordinateur bouge de
+            // 5 m (filtre distance) : immobile, il reste sur « — ».
+            values: session.derniereMesure == null
+                ? const ['—', '—', '—']
+                : [
+                    '${session.easting}',
+                    '${session.northing}',
+                    '${session.elevation}',
+                  ],
             valueSize: 45,
           ),
         ),
@@ -575,11 +589,20 @@ class _ValueTable extends StatelessWidget {
   }
 }
 
-/// Barre de progression du trajet (depart, point intermediaire, position, fin).
+/// Barre de progression du trajet (depart, prochain waypoint, position, fin).
+///
+/// Le waypoint affiche est le **prochain sommet non franchi de la polyline
+/// recue du serveur** (CDC §4.6), a sa fraction reelle de la longueur du
+/// parcours — pas un repère fige. Sans parcours chargé, aucun waypoint
+/// intermediaire n'est dessine.
 class _RouteBar extends StatelessWidget {
-  const _RouteBar({required this.progress});
+  const _RouteBar({required this.progress, this.fractionWaypoint});
 
   final double progress;
+
+  /// Fraction de longueur du prochain waypoint (0..1), ou null sans
+  /// parcours : la barre n'affiche alors que depart/arrivee/position.
+  final double? fractionWaypoint;
 
   @override
   Widget build(BuildContext context) {
@@ -603,10 +626,12 @@ class _RouteBar extends StatelessWidget {
           final double width = constraints.maxWidth;
           const double start = 0.03;
           const double end = 0.97;
-          const double waypoint = 0.30;
           final double span = end - start;
           final double current = start + span * progress.clamp(0.0, 1.0);
-          final double wp = start + span * waypoint;
+          final double? fractionWp = fractionWaypoint;
+          final double wp = fractionWp == null
+              ? -1
+              : start + span * fractionWp.clamp(0.0, 1.0);
           final double axe = hauteur / 2;
 
           Widget point(double position, double cote, Widget enfant) =>
@@ -659,16 +684,17 @@ class _RouteBar extends StatelessWidget {
                   ),
                 ),
               ),
-              point(
-                wp,
-                coteRepere,
-                const DecoratedBox(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Color(0xFFB9BBBD),
+              if (wp >= 0)
+                point(
+                  wp,
+                  coteRepere,
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Color(0xFFB9BBBD),
+                    ),
                   ),
                 ),
-              ),
               point(
                 current,
                 cotePosition,

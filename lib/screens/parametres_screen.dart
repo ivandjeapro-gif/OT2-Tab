@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/base_locale.dart';
+import '../data/transmetteur.dart';
 import '../state/session.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
@@ -41,6 +42,26 @@ class _ParametresScreenState extends State<ParametresScreen> {
 
   String _envoiMode = BaseLocale.envoiModeBlast;
   String? _erreur;
+
+  /// Resultat du dernier test de sante du serveur (affiche sous le bouton).
+  String? _diagnosticServeur;
+
+  /// Test la chaine complete vers le serveur central Apps Script : lit
+  // api_base/api_token TAPES (pas encore enregistres), appelle `?action=sante`
+  // et affiche le resultat en vert/rouge sous le bouton.
+  Future<void> _testerServeur() async {
+    final TransmetteurHttp test = TransmetteurHttp(
+      meta: (String cle) => switch (cle) {
+        'api_base' => _apiBase.text.trim().replaceFirst(RegExp(r'/+$'), ''),
+        'api_token' => _apiToken.text.trim(),
+        _ => session.base.meta(cle),
+      },
+    );
+    final String resultat = await test.diagnosticSante();
+    if (!mounted) return;
+    setState(() => _diagnosticServeur = resultat);
+    session.push(resultat);
+  }
 
   @override
   void initState() {
@@ -157,6 +178,42 @@ class _ParametresScreenState extends State<ParametresScreen> {
                       valeur: _apiToken,
                       masque: true,
                     ),
+                    SizedBox(height: 10 * k),
+                    // Test de sante (chaîne d'envoi vers le serveur central,
+                    // point 5 du reste-a-faire) : un GET ?action=sante valide
+                    // URL, jeton et deploiement Apps Script sans attendre la
+                    // premiere passe de synchro.
+                    SizedBox(
+                      height: mise.hauteurBouton * 0.8,
+                      child: Material(
+                        color: AppColors.slate,
+                        child: InkWell(
+                          onTap: _testerServeur,
+                          child: Center(
+                            child: Text(
+                              'Tester le serveur',
+                              style: TextStyle(
+                                fontSize: (17 * k).clamp(13.0, 17.0),
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (_diagnosticServeur != null) ...[
+                      SizedBox(height: 8 * k),
+                      Text(
+                        _diagnosticServeur!,
+                        style: TextStyle(
+                          fontSize: (13 * k).clamp(11.0, 13.0),
+                          color: _diagnosticServeur!.startsWith('OK')
+                              ? AppColors.green
+                              : AppColors.red,
+                        ),
+                      ),
+                    ],
                     SizedBox(height: 24 * k),
                     _Section(
                       k: k,

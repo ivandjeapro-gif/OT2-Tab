@@ -25,7 +25,9 @@ import 'transport_ble.dart';
 ///   pile Android, que le handshake complete par l'id applicatif.
 class TransportBlePeripherique implements TransportBle {
   TransportBlePeripherique({
-    this.nomPublic = 'ORE-TAB2-001',
+    // Inversion des roles (Voie 1) : c'est l'EXCAVATRICE qui emet, les DT
+    // s'y accrochent. Le nom annonce distingue donc l'emetteur.
+    this.nomPublic = 'ORE-EXC-001',
     this.serviceUuid = uuidService,
     this.caracteristiqueRx = uuidCaracteristiqueRx,
     this.caracteristiqueTx = uuidCaracteristiqueTx,
@@ -40,8 +42,8 @@ class TransportBlePeripherique implements TransportBle {
   static const String uuidCaracteristiqueTx =
       '0000fe5c-0000-1000-8000-00805f9b34fb';
 
-  /// Nom annoncé en advertising : le client BLE cherche un nom qui commence
-  /// par `ORE-TAB2` (BleClient.connecter).
+  /// Nom annoncé en advertising : les clients BLE (DT) cherchent un nom qui
+  /// commence par `ORE-EXC` (BleClient.connecter).
   final String nomPublic;
   final String serviceUuid;
   final String caracteristiqueRx;

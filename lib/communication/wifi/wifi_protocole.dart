@@ -25,6 +25,7 @@ class WifiProtocole {
   static const String typeHandshakeOk = 'HANDSHAKE_OK';
   static const String typeHandshakeKo = 'HANDSHAKE_KO';
   static const String typeEvenement = 'EVENEMENT';
+  static const String typeNotification = 'NOTIFICATION';
   static const String typeAck = 'ACK';
   static const String typeNack = 'NACK';
   static const String typePing = 'PING';
@@ -94,6 +95,20 @@ class WifiProtocole {
 
   static Map<String, Object?> ack({required String eventId}) =>
       <String, Object?>{'type': typeAck, 'event_id': eventId};
+
+  /// Notification serveur transmise sur le lien (Boss -> DT -> spotter),
+  /// meme structure que la descente HTTP du canal notifications.
+  static Map<String, Object?> notification({
+    required int id,
+    required String message,
+    String profil = '',
+  }) =>
+      <String, Object?>{
+        'type': typeNotification,
+        'id': id,
+        'profil': profil,
+        'message': message,
+      };
 
   static Map<String, Object?> nack({
     required String eventId,

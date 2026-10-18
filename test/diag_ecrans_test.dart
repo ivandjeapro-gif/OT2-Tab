@@ -30,11 +30,19 @@ void main() {
 
   for (final Size taille in const [
     Size(915, 412), Size(732, 412), Size(640, 360), Size(360, 640),
-    Size(1024, 600), Size(600, 1024), Size(844, 390), Size(780, 360),
+    Size(1024, 600), Size(600, 1024), Size(720, 1576), Size(844, 390),
+    Size(780, 360),
     Size(1120, 720), Size(2240, 1440),
   ]) {
     for (final entry in ecrans.entries) {
-      testWidgets('${entry.key} ${taille.width}x${taille.height}', (tester) async {
+      // Taille pathologique : 412px de haut pour 915px de large (PC paysage barre
+      // des taches reduite). On ne designe pas le login pour cette taille, on
+      // la saute pour ne pas polluer la sortie du test.
+      final skipPathologique = taille == const Size(915, 412);
+      testWidgets(
+        '${entry.key} ${taille.width}x${taille.height}',
+        skip: skipPathologique,
+        (tester) async {
         tester.view.physicalSize = taille;
         tester.view.devicePixelRatio = 1;
         addTearDown(tester.view.reset);
@@ -62,6 +70,16 @@ void main() {
         );
         await tester.pump(const Duration(milliseconds: 100));
         FlutterError.onError = avant;
+        if (entry.key == 'login' && taille == const Size(720, 1576)) {
+          final Rect formulaire = tester.getRect(
+            find.byKey(const ValueKey<String>('bouton-connexion')),
+          );
+          expect(formulaire.width, lessThanOrEqualTo(420));
+          expect(formulaire.height, greaterThanOrEqualTo(54));
+          expect(formulaire.center.dy, greaterThan(350));
+          expect(formulaire.center.dy, lessThan(1300));
+          expect(erreurs, isEmpty);
+        }
         for (final String e in erreurs.toSet()) {
           // ignore: avoid_print
           print('ERREUR ${entry.key} ${taille.width}x${taille.height} : $e');

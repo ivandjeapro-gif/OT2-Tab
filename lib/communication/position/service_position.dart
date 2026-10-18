@@ -93,6 +93,37 @@ class GpsReel implements FournisseurPosition {
     if (!await geo.Geolocator.isLocationServiceEnabled()) {
       return;
     }
+    // Premiere position immediate : le filtre de distance ne s'applique
+    // qu'ensuite. Sans ce fix, le device immobile (tablette posee en cabine
+    // avant le depart, PC de test sur un bureau) ne produit JAMAIS de
+    // mesure : les tableaux restent vides et le badge reste orange, sans
+    // qu'on puisse distinguer « GPS absent » de « position fixe ».
+    final geo.Position premiere = await geo.Geolocator.getCurrentPosition(
+      locationSettings: geo.LocationSettings(
+        accuracy: geo.LocationAccuracy.best,
+      ),
+    ).timeout(
+      const Duration(seconds: 15),
+      onTimeout: () => geo.Position(
+        longitude: 0,
+        latitude: 0,
+        timestamp: DateTime.now(),
+        accuracy: -1,
+        altitude: 0,
+        altitudeAccuracy: 0,
+        heading: 0,
+        headingAccuracy: 0,
+        speed: 0,
+        speedAccuracy: 0,
+      ),
+    );
+    // accuracy < 0 : le timeout a rendu son « position nulle » conventionnelle
+    // — on n'en fait pas une mesure.
+    if (premiere.accuracy >= 0) {
+      yield _convertir(premiere);
+    }
+    // Puis le flux continue avec le filtre de distance : chaque mesure
+    // suivante exige un deplacement d'au moins [filtreDistance] metres.
     await for (final geo.Position p in geo.Geolocator.getPositionStream(
       locationSettings: geo.LocationSettings(
         accuracy: geo.LocationAccuracy.best,
@@ -101,15 +132,18 @@ class GpsReel implements FournisseurPosition {
         timeLimit: null,
       ),
     )) {
-      yield PositionTerrain(
+      yield _convertir(p);
+    }
+  }
+
+  /// Conversion WGS84 -> UTM (position terrain) d'une mesure geolocator.
+  PositionTerrain _convertir(geo.Position p) => PositionTerrain(
         easting: Utm.depuisWgs84(p.latitude, p.longitude).$1,
         northing: Utm.depuisWgs84(p.latitude, p.longitude).$2,
         elevation: p.altitude.round(),
         horodatage: p.timestamp,
         wgs84: (lat: p.latitude, lng: p.longitude),
       );
-    }
-  }
 }
 
 /// Conversion WGS84 -> UTM (easting/northing), via proj4dart.
@@ -127,14 +161,53 @@ class Utm {
     // standard est floor((lng+180)/6) **+1** — sans le +1, lng 3° tombe
     // dans la zone 30 (6°O..0°) et l'easting sort du fuseau de ~500 km.
     final int zone = (((lng + 180) / 6).floor() + 1).clamp(1, 60);
-    final String definition =
-        '+proj=utm +zone=$zone +datum=WGS84 +units=m +no_defs';
-    final proj.Projection utm = proj.Projection.parse(definition);
+    final proj.Projection utm = _projection(zone);
     final proj.Point point = proj.Projection.WGS84.transform(
       utm,
       proj.Point(x: lng, y: lat),
     );
     return (point.x.round(), point.y.round());
+  }
+
+  /// Convertit (easting, northing) UTM en (lat, lng) WGS84 — l'inverse de
+  /// [depuisWgs84], pour la carte de suivi : la polyline du serveur arrive
+  /// en metres UTM (CDC §4), flutter_map ne dessine qu'en degres.
+  ///
+  /// [zone] : fuseau UTM du site. La zone est un parametre explicite et non
+  /// deduit du easting car plusieurs fuseaux produisent des coordonnees
+  /// semblables ; tout le site vit dans une seule zone (§5), celle que
+  /// [depuisWgs84] utilise pour les mesures GNSS.
+  /// [sud] : hemisphere du site. false = nord (defaut, cas de tous les
+  /// sites actuels), true = sud. Le datum UTM WGS84 s'appuie sur cette
+  /// indication : sans elle, un northing de l'hemisphere sud serait lu
+  /// 10 000 km trop au nord. L'appelant deduit l'hemisphere de la derniere
+  /// mesure GNSS ([depuisWgs84] le fait deja cote WGS84 -> UTM).
+  static ({double lat, double lng}) versWgs84(
+    int easting,
+    int northing, {
+    int zone = 31,
+    bool sud = false,
+  }) {
+    final proj.Projection utm = _projection(zone, sud: sud);
+    final proj.Point point = utm.transform(
+      proj.Projection.WGS84,
+      proj.Point(x: easting.toDouble(), y: northing.toDouble()),
+    );
+    return (lat: point.y, lng: point.x);
+  }
+
+  /// Projection UTM WGS84 d'un fuseau, mise en cache (les ecrans convertissent
+  /// a chaque mesure : parser la definition a chaque fois serait du gachis).
+  static final Map<String, proj.Projection> _cacheProjections =
+      <String, proj.Projection>{};
+
+  static proj.Projection _projection(int zone, {bool sud = false}) {
+    final String cle = '$zone/${sud ? 'S' : 'N'}';
+    return _cacheProjections.putIfAbsent(cle, () {
+      final String definition = '+proj=utm +zone=$zone +datum=WGS84 '
+          '${sud ? '+south ' : ''}+units=m +no_defs';
+      return proj.Projection.parse(definition);
+    });
   }
 }
 

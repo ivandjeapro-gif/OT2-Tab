@@ -14,9 +14,10 @@ import 'spotter_screen.dart';
 /// Ecran d'accueil : choix du profil + identifiants de connexion.
 ///
 /// Deux presentations, pilotees par MiseEnPage :
-/// - sur grand ecran, les deux colonnes sont cote a cote et partagent
-///   exactement le meme haut et le meme bas ;
-/// - sur telephone, elles s'empilent dans un defilement unique.
+/// - sur grand ecran, les deux colonnes sont cote a cote ;
+/// - sur telephone/tablette en portrait, elles s'empilent.
+///
+/// Aucune zone ne defile : la page tient toujours dans la hauteur visible.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.session});
 
@@ -79,7 +80,30 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       return;
     }
-    widget.session.connect(selected: profil, id: _id!, name: _name!);
+    // Defense en profondeur : on a change de profil depuis la selection de
+    // l'ID (race theorique : un autre widget appelle setState). Si l'ID ne
+    // fait plus partie du profil courant, on refuse plutot que d'envoyer une
+    // combinaison absurde a la session.
+    if (!widget.session.base.idsDuProfil(profil).contains(_id!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Selectionnez un identifiant compatible avec le profil.'),
+        ),
+      );
+      return;
+    }
+    // La validite du login vient des referentiels locaux, pas de l'etat Wi-Fi
+    // (une tablette hors ligne doit pouvoir ouvrir son profil).
+    final bool connecte =
+        widget.session.connect(selected: profil, id: _id!, name: _name!);
+    if (!connecte) {
+      final String motif = widget.session.base.refusEnCours ??
+          'Connexion refusee : referentiels serveur manquants ou obsoletes';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(motif)),
+      );
+      return;
+    }
 
     // L'ecran suit le role CDC du profil (REQ-002) : TAB 1 = spotter,
     // TAB 2 = DT, TAB 3 = excavatrice. Le libelle, lui, vient de la table.
@@ -100,22 +124,34 @@ class _LoginScreenState extends State<LoginScreen> {
 
     // Acces aux cles `meta` (PARAMETRES.md §7) : preparer une tablette ne
     // demande aucune connexion, le bouton vit donc sur cet ecran.
+    //
+    // Le `Transform.translate` decale le bouton vers la droite pour
+    // annuler le `margeHorizontale` du Padding parent (32 px quand
+    // largeur > 600, 18 sinon) et le coller au bord reel de l'ecran.
+    // On utilise une translation plutot qu'un padding negatif pour
+    // eviter l'assertion `padding.isNonNegative` levee depuis
+    // `shifted_box.dart:117`.
+    final double decalageDroitBoutonParametres =
+        (MediaQuery.sizeOf(context).width > 600 ? 32.0 : 18.0) - 4;
     final Widget boutonParametres = Align(
       alignment: Alignment.centerRight,
-      child: TextButton.icon(
-        key: const ValueKey<String>('bouton-parametres'),
-        onPressed: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => ParametresScreen(session: widget.session),
+      child: Transform.translate(
+        offset: Offset(decalageDroitBoutonParametres, 0),
+        child: TextButton.icon(
+          key: const ValueKey<String>('bouton-parametres'),
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => ParametresScreen(session: widget.session),
+            ),
           ),
-        ),
-        icon: const Icon(Icons.settings, size: 20, color: AppColors.slate),
-        label: Text(
-          'Parametres',
-          style: TextStyle(
-            fontSize: (15 * mise.k).clamp(12.0, 15.0),
-            fontWeight: FontWeight.w700,
-            color: AppColors.slate,
+          icon: const Icon(Icons.settings, size: 20, color: AppColors.slate),
+          label: Text(
+            'Parametres',
+            style: TextStyle(
+              fontSize: (15 * mise.k).clamp(12.0, 15.0),
+              fontWeight: FontWeight.w700,
+              color: AppColors.slate,
+            ),
           ),
         ),
       ),
@@ -129,6 +165,7 @@ class _LoginScreenState extends State<LoginScreen> {
       profil: _profil,
       surChangement: _choisirProfil,
       mise: mise,
+      compactPortrait: MiseEnPage.estCompactPortrait(context),
     );
     final Widget colonneIdentifiants = _Credentials(
       // Identifiants et noms enrrols lus dans la base (REQ-002) : les deux
@@ -145,6 +182,7 @@ class _LoginScreenState extends State<LoginScreen> {
       surNom: (v) => setState(() => _name = v),
       surConnexion: _connecter,
       mise: mise,
+      compactPortrait: MiseEnPage.estCompactPortrait(context),
     );
 
     return Scaffold(
@@ -153,59 +191,41 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Column(
           children: [
             Expanded(
-              child: Padding(
-                padding: mise.margePage,
-                child: Column(
-                  children: [
-                    boutonParametres,
-                    // Le logo est borne par la place disponible : sur une
-                    // fenetre basse il se reduit au lieu de pousser le reste
-                    // hors de l'ecran.
-                    Flexible(
-                      fit: FlexFit.loose,
-                      child: Image.asset(
-                        'assets/images/logo_ore_tracking.png',
-                        height: mise.hauteurLogo,
-                        fit: BoxFit.contain,
+              child: LayoutBuilder(
+                builder: (context, contraintesPage) {
+                  final double hauteurUtile = contraintesPage.maxHeight;
+                  // Regle unique, exposee par MiseEnPage : evitent les trois
+                  // predictions divergentes (cf. fix #3 de l'audit).
+                  final bool portraitCompact = MiseEnPage.estCompactPortrait(context) ||
+                      hauteurUtile < 720;
+                  final double maxLargeur = contraintesPage.maxWidth > 760
+                      ? 920
+                      : contraintesPage.maxWidth;
+                  final double margeHorizontale =
+                      contraintesPage.maxWidth > 600 ? 32 : 18;
+                  final double margeVerticale = portraitCompact ? 10 : 20;
+
+                  // Aucun defilement : le contenu est centre, jamais scrolle.
+                  return Center(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: maxLargeur),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: margeHorizontale,
+                          vertical: margeVerticale,
+                        ),
+                        child: _LoginBody(
+                          mise: mise,
+                          portraitCompact: portraitCompact,
+                          hauteurUtile: hauteurUtile,
+                          boutonParametres: boutonParametres,
+                          profils: colonneProfils,
+                          identifiants: colonneIdentifiants,
+                        ),
                       ),
                     ),
-                    SizedBox(height: mise.ecartTitre),
-                    Text(
-                      'Welcome here, select your profil',
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: mise.policeTitre,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.5 * mise.k,
-                        color: AppColors.ink,
-                      ),
-                    ),
-                    // Ecart fixe et reglable entre le titre et le formulaire.
-                    // C'est un `SizedBox` : la distance ne depend plus du
-                    // partage de la place libre avec le formulaire, elle vaut
-                    // exactement `ecartSection` (40 px sur la tablette).
-                    SizedBox(height: mise.ecartSection),
-                    Expanded(
-                      child: mise.aEmpile
-                          ? _ColonnesEmpilees(
-                              profils: colonneProfils,
-                              identifiants: colonneIdentifiants,
-                              mise: mise,
-                            )
-                          : Row(
-                              children: [
-                                Expanded(child: colonneProfils),
-                                SizedBox(width: mise.margeFilet),
-                                _FiletVertical(mise: mise),
-                                SizedBox(width: mise.margeFilet),
-                                Expanded(child: colonneIdentifiants),
-                              ],
-                            ),
-                    ),
-                  ],
-                ),
+                  );
+                },
               ),
             ),
             AppFooter(mise: mise),
@@ -216,50 +236,166 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-/// Trait vertical entre les deux colonnes, volontairement plus court que la
-/// zone disponible et espace des deux cotes.
-class _FiletVertical extends StatelessWidget {
-  const _FiletVertical({required this.mise});
+/// Corps central de l'ecran de connexion : logo, titre et la zone des deux
+/// colonnes (profils + identifiants) en cote-a-cote ou empilees selon la
+/// disposition decidee par [MiseEnPage].
+///
+/// Extrait du build de `_LoginScreenState` pour rendre la methode principale
+/// lisible et faciliter le test visuel des deux variantes.
+class _LoginBody extends StatelessWidget {
+  const _LoginBody({
+    required this.mise,
+    required this.portraitCompact,
+    required this.hauteurUtile,
+    required this.boutonParametres,
+    required this.profils,
+    required this.identifiants,
+  });
 
   final MiseEnPage mise;
+  final bool portraitCompact;
+  final double hauteurUtile;
+  final Widget boutonParametres;
+  final Widget profils;
+  final Widget identifiants;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 1.5,
-      child: FractionallySizedBox(
-        heightFactor: mise.ratioFilet,
-        child: Container(color: AppColors.ink),
-      ),
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: boutonParametres,
+        ),
+        SizedBox(
+          height: portraitCompact ? 90 : mise.hauteurLogo,
+          child: Image.asset(
+            'assets/images/logo_ore_tracking.png',
+            fit: BoxFit.contain,
+          ),
+        ),
+        SizedBox(height: portraitCompact ? 8 : mise.ecartTitre),
+        Text(
+          'Welcome here, select your profil',
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: portraitCompact ? 24 : mise.policeTitre.clamp(22.0, 32.0),
+            fontWeight: FontWeight.w800,
+            letterSpacing: portraitCompact ? 0.6 : 1.0 * mise.k,
+            color: AppColors.ink,
+          ),
+        ),
+        SizedBox(height: portraitCompact ? 18 : mise.ecartSection),
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: portraitCompact ? 500 : double.infinity,
+          ),
+          child: mise.aEmpile
+              ? _StackedBody(
+                  profils: profils,
+                  identifiants: identifiants,
+                  mise: mise,
+                  compactPortrait: portraitCompact,
+                )
+              : _SideBySideBody(
+                  profils: profils,
+                  identifiants: identifiants,
+                  mise: mise,
+                  hauteurUtile: hauteurUtile,
+                ),
+        ),
+      ],
     );
   }
 }
 
-/// Version telephone : une seule colonne defilante, separee par un trait
-/// horizontal.
-class _ColonnesEmpilees extends StatelessWidget {
-  const _ColonnesEmpilees({
+/// Deux colonnes alignees sur une meme ligne, sans filet vertical.
+class _SideBySideBody extends StatelessWidget {
+  const _SideBySideBody({
     required this.profils,
     required this.identifiants,
     required this.mise,
+    required this.hauteurUtile,
   });
 
   final Widget profils;
   final Widget identifiants;
   final MiseEnPage mise;
+  final double hauteurUtile;
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      child: Column(
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: (hauteurUtile - 260).clamp(220.0, 600.0),
+      ),
+      child: Row(
         children: [
-          profils,
-          SizedBox(height: mise.ecartSection),
-          Container(height: 1.5, color: AppColors.ink),
-          SizedBox(height: mise.ecartSection),
-          identifiants,
+          Expanded(child: profils),
+          SizedBox(width: mise.ecartElement),
+          Expanded(child: identifiants),
         ],
       ),
+    );
+  }
+}
+
+/// Variante empilee : le wrapper choisit entre cote-a-cote et empile en
+/// fonction de [MiseEnPage.aEmpile]. La separation visuelle entre les deux
+/// blocs est assuree par [_ColonnesEmpilees].
+class _StackedBody extends StatelessWidget {
+  const _StackedBody({
+    required this.profils,
+    required this.identifiants,
+    required this.mise,
+    required this.compactPortrait,
+  });
+
+  final Widget profils;
+  final Widget identifiants;
+  final MiseEnPage mise;
+  final bool compactPortrait;
+
+  @override
+  Widget build(BuildContext context) {
+    return _ColonnesEmpilees(
+      profils: profils,
+      identifiants: identifiants,
+      mise: mise,
+      compactPortrait: compactPortrait,
+    );
+  }
+}
+
+/// Version telephone : une seule colonne, separee par un trait horizontal.
+class _ColonnesEmpilees extends StatelessWidget {
+  const _ColonnesEmpilees({
+    required this.profils,
+    required this.identifiants,
+    required this.mise,
+    this.compactPortrait = false,
+  });
+
+  final Widget profils;
+  final Widget identifiants;
+  final MiseEnPage mise;
+  final bool compactPortrait;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        profils,
+        SizedBox(height: compactPortrait ? 16 : mise.ecartSection),
+        Container(height: 1.5, color: AppColors.ink),
+        SizedBox(height: compactPortrait ? 16 : mise.ecartSection),
+        identifiants,
+      ],
     );
   }
 }
@@ -270,6 +406,7 @@ class _ProfilePicker extends StatelessWidget {
     required this.profil,
     required this.surChangement,
     required this.mise,
+    this.compactPortrait = false,
   });
 
   /// Profils proposes, dans l'ordre de la table `profils`.
@@ -277,14 +414,15 @@ class _ProfilePicker extends StatelessWidget {
   final Profil? profil;
   final ValueChanged<Profil> surChangement;
   final MiseEnPage mise;
+  final bool compactPortrait;
 
   @override
   Widget build(BuildContext context) {
     final Widget contenu = Column(
-      // Flux vertical simple : les deux colonnes font la meme hauteur (3
-      // elements de hauteur identique, 2 ecarts egaux) donc elles restent
-      // alignees en haut et en bas sans espace entre leurs elements.
-      mainAxisAlignment: MainAxisAlignment.start,
+      mainAxisAlignment: compactPortrait
+          ? MainAxisAlignment.center
+          : MainAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (profils.isEmpty)
@@ -304,28 +442,30 @@ class _ProfilePicker extends StatelessWidget {
             libelle: profils[i].libelle,
             selectionne: profils[i] == profil,
             surAppui: () => surChangement(profils[i]),
-            hauteur: mise.hauteurBouton,
-            police: (21 * mise.k).clamp(15.0, 21.0),
+            hauteur: compactPortrait
+                ? (54 * mise.k).clamp(48.0, 58.0)
+                : mise.hauteurBouton,
+            police: compactPortrait
+                ? 18
+                : (21 * mise.k).clamp(15.0, 21.0),
           ),
         ],
       ],
     );
 
     if (mise.aEmpile) {
-      return Padding(padding: mise.margeColonne, child: contenu);
+      return Padding(
+        padding: EdgeInsets.symmetric(
+          vertical: compactPortrait ? 2 : mise.margeColonne.vertical,
+        ),
+        child: contenu,
+      );
     }
 
-    // Hauteur bornee : le contenu est centre s'il tient, defile sinon.
+    // Aucun defilement : le contenu est centre dans la colonne.
     return Padding(
       padding: mise.margeColonne,
-      child: LayoutBuilder(
-        builder: (context, contraintes) => SingleChildScrollView(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: contraintes.maxHeight),
-            child: contenu,
-          ),
-        ),
-      ),
+      child: Center(child: contenu),
     );
   }
 }
@@ -353,7 +493,8 @@ class _ProfileButton extends StatelessWidget {
       child: InkWell(
         onTap: surAppui,
         child: Container(
-          height: hauteur,
+          constraints: const BoxConstraints(minHeight: 54),
+          height: hauteur < 54 ? 54 : hauteur,
           alignment: Alignment.center,
           child: Text(
             libelle,
@@ -379,6 +520,7 @@ class _Credentials extends StatelessWidget {
     required this.surNom,
     required this.surConnexion,
     required this.mise,
+    this.compactPortrait = false,
   });
 
   /// Identifiants et noms du role choisi, tous deux lus dans `equipements`.
@@ -394,12 +536,15 @@ class _Credentials extends StatelessWidget {
   final ValueChanged<String?> surNom;
   final VoidCallback surConnexion;
   final MiseEnPage mise;
+  final bool compactPortrait;
 
   @override
   Widget build(BuildContext context) {
     final Widget contenu = Column(
-      // Meme hauteur que la colonne des profils, donc meme haut et meme bas.
-      mainAxisAlignment: MainAxisAlignment.start,
+      mainAxisAlignment: compactPortrait
+          ? MainAxisAlignment.center
+          : MainAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
         SelectField(
           key: const ValueKey<String>('champ-id'),
@@ -409,7 +554,7 @@ class _Credentials extends StatelessWidget {
           surChangement: surId,
           mise: mise,
         ),
-        SizedBox(height: mise.ecartElement),
+        SizedBox(height: compactPortrait ? 10 : mise.ecartElement),
         SelectField(
           key: const ValueKey<String>('champ-nom'),
           indice: 'Name',
@@ -418,7 +563,7 @@ class _Credentials extends StatelessWidget {
           surChangement: surNom,
           mise: mise,
         ),
-        SizedBox(height: mise.ecartElement),
+        SizedBox(height: compactPortrait ? 10 : mise.ecartElement),
         // Largeur bornee par la colonne : `largeurBouton` plafonne le bouton,
         // mais sur un ecran plus etroit que cette valeur, le bouton prend la
         // largeur disponible au lieu de deborder de la colonne.
@@ -426,8 +571,12 @@ class _Credentials extends StatelessWidget {
           key: const ValueKey<String>('bouton-connexion'),
           constraints: BoxConstraints(
             maxWidth: mise.largeurBouton,
-            minHeight: mise.hauteurBouton,
-            maxHeight: mise.hauteurBouton,
+            minHeight: compactPortrait
+                ? 54
+                : (mise.hauteurBouton < 54 ? 54 : mise.hauteurBouton),
+            maxHeight: compactPortrait
+                ? 54
+                : (mise.hauteurBouton < 54 ? 54 : mise.hauteurBouton),
           ),
           child: Material(
             color: AppColors.slate,
@@ -454,19 +603,18 @@ class _Credentials extends StatelessWidget {
     );
 
     if (mise.aEmpile) {
-      return Padding(padding: mise.margeColonne, child: contenu);
+      return Padding(
+        padding: EdgeInsets.symmetric(
+          vertical: compactPortrait ? 2 : mise.margeColonne.vertical,
+        ),
+        child: contenu,
+      );
     }
 
+    // Aucun defilement : le contenu est centre dans la colonne.
     return Padding(
       padding: mise.margeColonne,
-      child: LayoutBuilder(
-        builder: (context, contraintes) => SingleChildScrollView(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: contraintes.maxHeight),
-            child: contenu,
-          ),
-        ),
-      ),
+      child: Center(child: contenu),
     );
   }
 }
@@ -485,24 +633,36 @@ class SelectField extends StatelessWidget {
   final String indice;
   final String? valeur;
   final List<String> elements;
-  final ValueChanged<String?> surChangement;
+  /// Callback appele uniquement avec une valeur reelle (jamais `null`).
+  ///
+  /// Le [DropdownButton] sous-jacent peut theoriquement appeler `onChanged`
+  /// avec `null` quand la liste change, mais en pratique la liste est figee
+  /// pendant la duree de vie du widget : on filtre donc ce cas pour exposer
+  /// une signature non-null, plus sure pour les appelants.
+  final ValueChanged<String> surChangement;
   final MiseEnPage mise;
 
   @override
   Widget build(BuildContext context) {
-    final TextStyle styleIndice = TextStyle(
-      fontSize: (19 * mise.k).clamp(14.0, 19.0),
+    // Taille de police bornee, calculee une seule fois par build : on la
+    // partage entre l'indice, la valeur selectionnee et les items du dropdown,
+    // ce qui supprime la duplication d'origine (cf. fix #6 de l'audit).
+    final double fontSize = (19 * mise.k).clamp(14.0, 19.0);
+    final TextStyle baseStyle = TextStyle(
+      fontSize: fontSize,
+      decoration: TextDecoration.underline,
+    );
+    final TextStyle styleIndice = baseStyle.copyWith(
       color: const Color(0xFF8A8D91),
-      decoration: TextDecoration.underline,
     );
-    final TextStyle styleValeur = TextStyle(
-      fontSize: (19 * mise.k).clamp(14.0, 19.0),
-      color: AppColors.ink,
-      decoration: TextDecoration.underline,
-    );
+    final TextStyle styleValeur = baseStyle.copyWith(color: AppColors.ink);
+    final TextStyle styleItem = TextStyle(fontSize: fontSize);
 
     return Container(
-      height: mise.hauteurBouton,
+      constraints: BoxConstraints(
+        minHeight: mise.hauteurBouton < 54 ? 54 : mise.hauteurBouton,
+      ),
+      height: mise.hauteurBouton < 54 ? 54 : mise.hauteurBouton,
       decoration: BoxDecoration(
         border: Border.all(color: AppColors.border, width: 1.5),
       ),
@@ -526,16 +686,15 @@ class SelectField extends StatelessWidget {
                     DropdownMenuItem<String>(
                       value: element,
                       child: Center(
-                          child: Text(
-                            element,
-                            style: TextStyle(
-                              fontSize: (19 * mise.k).clamp(14.0, 19.0),
-                            ),
-                          ),
+                        child: Text(element, style: styleItem),
                       ),
                     ),
                 ],
-                onChanged: surChangement,
+                onChanged: (String? v) {
+                  if (v != null) {
+                    surChangement(v);
+                  }
+                },
               ),
             ),
           ),

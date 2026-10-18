@@ -1,0 +1,46 @@
+Voici le résumé de l'architecture P2P hors-ligne pour votre application à 3 profils :
+La synchronisation se fait entièrement sans Internet via le réseau Wi-Fi Direct, en utilisant la tablette de l'excavatrice comme l'unique passerelle mobile entre le DT et le Spotter ⚠️. La tablette de l'excavatrice tourne en boucle en tâche de fond comme un serveur P2P permanent. 
+
+Pour synchroniser, l'élève suit un formulaire guidé en deux étapes sur son écran : à l'Étape 1, il s'approche du professeur et sa tablette se connecte automatiquement pour "aspirer" les données et notes de l'enseignant ; à l'Étape 2, l'élève sélectionne manuellement le nom de son parent parmi une liste d'appareils détectés à proximité, ce qui fusionne les données du professeur avec ses propres statistiques d'activité pour envoyer ce bloc unique directement sur la tablette du Parent actif. Ce système "chacun son tour" garantit une étanchéité totale des données, permet au professeur de suivre visuellement les passages sur son tableau de bord sans jamais toucher à l'écran, et isole le parent connecté de tous les autres parents en attente.
+Pour passer au développement, préférez-vous que je vous fournisse :
+
+* Le modèle de code Flutter / React Native pour enchaîner l'Étape 1 et l'Étape 2 ?
+* La structure de la base de données locale pour stocker proprement ces formulaires ?
+
+
+Voici le résumé de l'architecture P2P hors-ligne pour votre application à 3 profils :
+La synchronisation se fait entièrement sans Internet via le réseau Wi-Fi Direct, en utilisant la tablette de l'excavatrice comme l'unique passerelle mobile entre le DT et le Spotter ⚠️. La tablette de l'excavatrice tourne en boucle en tâche de fond comme un serveur P2P permanent. 
+
+En 1 : la Tablette "excavatrice" doit emettre un signal "hospot"
+
+
+
+1) Le rayon passe a 10 m et voici la logique que je propose:le hospot ne doit pas depasser un rayon de 10m. C'est lui qui definit le rayon de connexion. Peut importe la capacité du telephone, la logueur du hospot doit etre plafonné a 10m par le profil excavator.  
+
+2) « Plusieurs DT » : comment l'excavatrice voit les DT candidats : ce sont les DT qui voient l'excavatrice car ils sont dans sont rayon de connexion (10 m) et se connecte a ce dernier. 
+
+3) Moyenne (Xmoy, Ymoy, Zmoy) : sur combien de positions ? Sur toute la session de connexion d'un DT donné (par exemple DT 13). il reçoit au fur et a mesure. L'orsqu'il sort de la zone de connexion alors on garde la dernière moyenne calculé. 
+
+4) Qui calcule et qui envoie : Excavator calcule et envoie a DT --------- DT reçoit et une fois online envoie au serveur
+
+« 35 % » : juste l'estimation personnelle de la realisation du profil; ignore. 
+
+
+
+
+INFORMATION BACKEND :
+
+Url server : https://script.google.com/macros/s/AKfycbwwE_oFNpVeZmXuJT6qL9yUGBW3Xn-930tEtfnH8k-hV-bBkyjH8b5VOA4aqgo_2UH2GA/exec
+
+Sheet url : 1U1hU4uOAwAhWyFOD6LuLgHfbRAyTU1TxxjD_vnF0rks
+
+Google Drive : https://drive.google.com/drive/folders/1nOTs7uWhbtQb3XeZ9vhDRMFBB837KJ2B?usp=sharing
+
+Tokens : 
+
+Token 1 : bcjp29afy3uso1mltw60vdnre5qgzk8xhi47
+Token 2 : mo18cu7sbgixajzeq9n63yv5lr40fwptk2hd
+Token 3 : vrfslqgtwhodzp7y91c83j6b0ke52iamxnu4
+Token 4 : tyk641g7blsodzjurwfcqniamx93v5e80h2p
+Token 5 : mfe2lpchd7nbiyvq5wo6g13ukazxt0js849r
+

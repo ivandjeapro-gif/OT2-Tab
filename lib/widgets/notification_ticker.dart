@@ -49,9 +49,9 @@ class _NotificationTickerState extends State<NotificationTicker> {
   Widget build(BuildContext context) {
     final MiseEnPage mise = MiseEnPage.depuis(context);
     final bool enAlerte = widget.session.alerteActive;
+    final bool enNotification = widget.session.notificationActive;
 
-    // Alerte : un seul message, rouge, pas de defilement (le message ne
-    // bouge pas tant que le DT reste hors parcours).
+    // Alerte hors parcours : priorite absolue sur tout le reste.
     if (enAlerte) {
       return Container(
         height: mise.hauteurTicker,
@@ -73,8 +73,80 @@ class _NotificationTickerState extends State<NotificationTicker> {
       );
     }
 
-    // Regime normal : defilement des evenements reels.
+    // Notification Boss (ordre du bureau) : bandeau rouge plein cadre,
+    // installe par la session a la reception (HTTP ou lien local). Reste
+    // jusqu'a l'acquittement de l'operateur, avec un bouton « OK » qui
+    // retombe le bandeau — la notification reste en base (historique).
+    if (enNotification) {
+      return Container(
+        height: mise.hauteurTicker,
+        decoration: const BoxDecoration(color: AppColors.red),
+        alignment: Alignment.center,
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 10),
+              child: Icon(Icons.priority_high, color: Colors.white, size: 22),
+            ),
+            Expanded(
+              child: Text(
+                widget.session.messageNotification,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  fontSize: (17 * mise.k).clamp(11.0, 17.0),
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: widget.session.acquitterNotification,
+              child: const Text(
+                'OK',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     final messages = widget.session.notifications;
+
+    // Synchro en cours : le dernier message poussé prend le dessus sur la
+    // rotation — l'operateur voit « Synchronisation demandee... » puis les
+    // resultats de chaque passe au fil de l'eau, au lieu de les noyer dans
+    // le defilement. La rotation reprend des que la synchro est terminee.
+    if (widget.session.synchroActive && messages.isNotEmpty) {
+      final String courant = messages.last;
+      return Container(
+        height: mise.hauteurTicker,
+        decoration: const BoxDecoration(color: AppColors.slate),
+        alignment: Alignment.center,
+        clipBehavior: Clip.antiAlias,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: Text(
+            courant,
+            key: ValueKey<String>(courant),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+              fontSize: (17 * mise.k).clamp(11.0, 17.0),
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Regime normal : defilement des evenements reels.
     final message = messages.isEmpty ? '' : messages[_index % messages.length];
     return Container(
       height: mise.hauteurTicker,

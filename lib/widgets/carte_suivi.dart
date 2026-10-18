@@ -4,13 +4,14 @@ import 'package:latlong2/latlong.dart';
 
 import '../theme/app_theme.dart';
 
-/// Carte de suivi du DT : fond OpenStreetMap, trajet du depart vers la
-/// destination, camion en route et destination marquees.
+/// Carte de suivi du DT : fond OpenStreetMap, parcours recu du serveur
+/// (polyline superposee aux tuiles), portion parcourue en vert, position
+/// reelle du DT et destination marquees.
 ///
 /// La carte ne lit rien elle meme : elle recoit des points que la session a
 /// deja lus dans la base. Le recadrage se fait par la cle du `FlutterMap`,
 /// donc uniquement quand la destination change - un tick de synchro de plus
-/// deplace le camion sans jamais faire sauter le zoom choisi a la main.
+/// deplace le DT sans jamais faire sauter le zoom choisi a la main.
 class CarteSuivi extends StatelessWidget {
   const CarteSuivi({
     super.key,
@@ -18,6 +19,8 @@ class CarteSuivi extends StatelessWidget {
     required this.arrivee,
     this.depart,
     this.position,
+    this.parcours,
+    this.positionParcourue,
     this.libelleDestination,
   });
 
@@ -30,8 +33,17 @@ class CarteSuivi extends StatelessWidget {
   /// Destination a atteindre.
   final ({double lat, double lng})? arrivee;
 
-  /// Position courante du DT sur le trajet.
+  /// Position reelle du DT (mesure GNSS en WGS84).
   final ({double lat, double lng})? position;
+
+  /// Parcours recue du serveur, convertie en WGS84 : la polyline complete
+  /// (noire) superposee aux tuiles OpenStreetMap. Absente => la carte
+  /// retombe sur le trajet depart->arrivee a deux points.
+  final List<({double lat, double lng})>? parcours;
+
+  /// Portion deja parcourue du parcours (jusqu'a la position reelle, point
+  /// projeté inclus) : dessinee en vert par-dessus la polyline noire.
+  final List<({double lat, double lng})>? positionParcourue;
 
   final String? libelleDestination;
 
@@ -45,6 +57,28 @@ class CarteSuivi extends StatelessWidget {
     final ({double lat, double lng})? depart = this.depart;
     final ({double lat, double lng})? position = this.position;
 
+    // Polyline du serveur (waypoints) : utilisee telle quelle si elle est
+    // la, sinon repli sur le trajet a deux points depart -> arrivee.
+    final List<({double lat, double lng})>? parcours = this.parcours;
+    final List<LatLng> traceComplet = parcours != null && parcours.length >= 2
+        ? parcours.map(_latLng).toList()
+        : <LatLng>[
+            if (depart != null) _latLng(depart),
+            _latLng(arrivee),
+          ];
+
+    // Portion parcourue : si la session a projete la position sur le
+    // parcours, elle fournit la trace tronquee ; sinon la portion dessinee
+    // reste depart -> position (vieux comportement, sans polyline).
+    final List<({double lat, double lng})>? parcouru = positionParcourue;
+    final bool traceVerte = parcouru != null && parcouru.length >= 2;
+    final List<LatLng> traceParcouru = traceVerte
+        ? parcouru.map(_latLng).toList()
+        : <LatLng>[
+            if (depart != null && position != null) _latLng(depart),
+            if (depart != null && position != null) _latLng(position),
+          ];
+
     // Les points connus encadrent le trajet : on cadre dessus, avec une
     // marge pour que rien ne colle au bord. maxZoom empeche deux points
     // proches de zoomer jusqu'a des carreaux illisibles.
@@ -52,6 +86,7 @@ class CarteSuivi extends StatelessWidget {
       if (depart != null) _latLng(depart),
       _latLng(arrivee),
       if (position != null) _latLng(position),
+      ...traceComplet,
     ];
 
     // L'attribution vit hors de la carte, en overlay : celle de flutter_map
@@ -80,22 +115,21 @@ class CarteSuivi extends StatelessWidget {
                 userAgentPackageName: 'com.oretracking.ore_tracking',
                 maxZoom: 19,
               ),
-              // Trace complet en noir, puis la partie deja parcourue en vert :
-              // la meme lecture que la barre de trajet sous le tableau.
+              // Trace complet en noir (polyline serveur superposee aux
+              // tuiles), puis la partie deja parcourue en vert : la meme
+              // lecture que la barre de trajet sous le tableau.
               PolylineLayer(
                 polylines: [
-                  if (depart != null)
-                    Polyline(
-                      points: [_latLng(depart), _latLng(arrivee)],
-                      strokeWidth: 4,
-                      color: Colors.black,
-                    ),
-                  if (depart != null && position != null)
-                    Polyline(
-                      points: [_latLng(depart), _latLng(position)],
-                      strokeWidth: 4,
-                      color: AppColors.green,
-                    ),
+                  Polyline(
+                    points: traceComplet,
+                    strokeWidth: 4,
+                    color: Colors.black,
+                  ),
+                  Polyline(
+                    points: traceParcouru,
+                    strokeWidth: 4,
+                    color: AppColors.green,
+                  ),
                 ],
               ),
               MarkerLayer(
@@ -131,7 +165,7 @@ class CarteSuivi extends StatelessWidget {
                       point: _latLng(position),
                       width: 40,
                       height: 40,
-                      child: const _Camion(),
+                      child: const _DtDemining(),
                     ),
                 ],
               ),
@@ -207,9 +241,10 @@ class _Destination extends StatelessWidget {
   }
 }
 
-/// Le DT : pastille verte a l'ecusson camion, comme les badges du reseau.
-class _Camion extends StatelessWidget {
-  const _Camion();
+/// Le DT : pastille verte a l'ecusson demineur (DT = demining team),
+/// cohérente avec les badges du reseau.
+class _DtDemining extends StatelessWidget {
+  const _DtDemining();
 
   @override
   Widget build(BuildContext context) {
@@ -222,7 +257,9 @@ class _Camion extends StatelessWidget {
           BoxShadow(color: Colors.black26, blurRadius: 4),
         ],
       ),
-      child: const Icon(Icons.local_shipping, size: 20, color: Colors.white),
+      // Le marqueur represente un vehicule de deminage, pas un camion de
+      // fret : le bouclier (safe/demining) plutot que le camion.
+      child: const Icon(Icons.shield, size: 20, color: Colors.white),
     );
   }
 }

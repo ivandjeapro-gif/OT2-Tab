@@ -123,7 +123,7 @@ class TransportTcpWifi implements TransportWifi {
       // Hôte trouvé — on referme aussitôt : la vraie connexion est faite
       // par [connecter], le scan ne fait que découvrir.
       socket.destroy();
-      return ReseauWifi(ssid: 'ORE-TAB2', adresse: hote, puissance: 0);
+      return ReseauWifi(ssid: 'ORE-EXC', adresse: hote, puissance: 0);
     } catch (_) {
       return null;
     }

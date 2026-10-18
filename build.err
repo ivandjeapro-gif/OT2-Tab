@@ -1,0 +1,30 @@
+D:/DataCenter/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strip.exe: error: 'E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\arm64-v8a\libflutter.so': No such file or directory
+
+D:/DataCenter/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strip.exe: error: 'E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\armeabi-v7a\libflutter.so': No such file or directory
+
+D:/DataCenter/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strip.exe: error: 'E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\x86_64\libflutter.so': No such file or directory
+
+D:/DataCenter/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strip.exe: error: 'E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\arm64-v8a\libVkLayer_khronos_validation.so': section header table goes past the end of the file: e_shoff = 0xd7d66e0
+
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:stripDebugDebugSymbols'.
+> A failure occurred while executing com.android.build.gradle.internal.tasks.StripDebugSymbolsDelegate
+   > There were multiple failures while executing work items
+      > A failure occurred while executing com.android.build.gradle.internal.tasks.StripDebugSymbolsRunnable
+         > E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\arm64-v8a\libflutter.so
+      > A failure occurred while executing com.android.build.gradle.internal.tasks.StripDebugSymbolsRunnable
+         > E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\armeabi-v7a\libflutter.so
+      > A failure occurred while executing com.android.build.gradle.internal.tasks.StripDebugSymbolsRunnable
+         > E:\PROJETS\VISION MINING\DB\OT V2\OT 2 - Tab\build\app\intermediates\merged_native_libs\debug\mergeDebugNativeLibs\out\lib\x86_64\libflutter.so
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 9m 54s
+Gradle task assembleDebug failed with exit code 1

@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
+import '../models/models.dart';
 import 'base_locale.dart';
 import 'transmetteur.dart';
 
@@ -161,8 +164,137 @@ class Synchronisation extends ChangeNotifier {
     // passe, meme quand rien n'est parti, car l'ecran DT en depend pour
     // savoir ou aller.
     await unePasseAffectation();
+    // Les referentiels metier (profils, equipements, familles DT) viennent
+    // du serveur et sont poses localement dans une transaction atomique.
+    await unePasseReferentiels();
+    // Idem pour les blasts et cartes disponibles pour le spotter.
+    await unePasseBlasts();
+    // Canal Boss -> tablette : les nouveaux messages depuis le dernier id
+    // connu, pousses dans la zone de notifications de l'interface.
+    await unePasseNotifications();
     notifyListeners();
     return valides;
+  }
+
+  /// Télécharge et remplace les référentiels locaux depuis le snapshot serveur.
+  /// Une erreur ou un snapshot invalide conserve intégralement les valeurs
+  /// locales précédentes. La synchronisation ne déduit rien depuis le code.
+  Future<void> unePasseReferentiels({bool forcer = false}) async {
+    if (!reseauDisponible && !forcer) return;
+    final ReferentielsServeur? snapshot =
+        await transmetteur.lireReferentiels();
+    if (snapshot == null) return;
+    try {
+      await base.appliquerReferentiels(snapshot);
+    } on Object catch (e) {
+      base.journaliser('REFERENTIELS refuses : $e');
+      _dire('Referentiels serveur invalides - listes locales conservees');
+      return;
+    }
+    _dire(
+      'Referentiels serveur - ${snapshot.profils.length} profil(s), '
+      '${snapshot.equipements.length} equipement(s), '
+      '${snapshot.typesDT.length} famille(s) DT',
+    );
+    base.journaliser(
+      'REFERENTIELS recus: ${snapshot.profils.length} profils, '
+      '${snapshot.equipements.length} equipements, '
+      '${snapshot.typesDT.length} familles DT',
+    );
+    notifyListeners();
+  }
+
+  /// Lit les notifications du serveur posterieures au dernier id connu et
+  /// les pose en base. Chaque nouveau message : bandeau rouge plein cadre
+  /// (ordre du bureau) + message technique dans le ticker. Si la session
+  /// porte un relais local (DT excavatrice), le message est re-diffuse aux
+  /// clients presents dans son rayon — c'est la chaine Boss -> serveur ->
+  /// DT -> spotter qui complete la descente HTTP directe.
+  Future<void> unePasseNotifications() async {
+    if (!reseauDisponible) return;
+    final List<NotificationServeur>? recues = await transmetteur
+        .lireNotifications(depuis: base.derniereIdNotification);
+    if (recues == null || recues.isEmpty) return;
+
+    final int ecrits = base.recevoirNotifications(recues);
+    for (final NotificationServeur n in recues) {
+      if (n.id <= base.derniereIdNotification) continue;
+      // La session fait le reste : bandeau rouge + ticker + relais local.
+      _surMessage?.call('BOSS#${n.id}#${n.profil}#${n.message}');
+    }
+    if (ecrits > 0) {
+      base.journaliser('NOTIFICATIONS $ecrits nouveau(x) message(s) du serveur');
+      notifyListeners();
+    }
+  }
+
+  /// Lit la liste des blasts proposee par le serveur et l'ecrit dans la base.
+  ///
+  /// `null` rendu par le transmetteur = rien a changer (defaut, reseau) : la
+  /// liste locale n'est jamais alteree par une erreur de passage (REQ-012).
+  /// Apres ecriture, les plans encore en URL serveur sont telecharges vers
+  /// des fichiers locaux — c'est ce qui rend les cartes consultables hors
+  /// ligne, le JPG suivant la base et non le reseau.
+  Future<void> unePasseBlasts() async {
+    if (!reseauDisponible) return;
+    final List<BlastServeur>? liste = await transmetteur.lireBlasts();
+    if (liste == null) {
+      // null = le transmetteur a refuse de servir (token invalide, 4xx/5xx).
+      // On le journalise : un token mal aligne ne fait plus silence.
+      base.journaliser('BLASTS serveur injoignable (token ou reseau KO)');
+      return;
+    }
+    if (liste.isEmpty) {
+      base.journaliser('BLASTS serveur : liste vide recue');
+      return;
+    }
+
+    final int ecrits = base.recevoirBlasts(liste);
+    if (ecrits > 0) {
+      _dire(
+        'Blasts recus du serveur - $ecrits mise(s) a jour, '
+        '${base.blasts.length} blast(s) en local',
+      );
+      notifyListeners();
+    }
+
+    // Plans manquants : un blast qui pointe encore sur une URL (http) n'a
+    // pas son JPG en local. Telecharge une fois, pose en fichier, et le
+    // chemin local remplace l'URL — les passes suivantes n'y reviennent pas.
+    for (final BlastServeur serveur in liste) {
+      if (serveur.planUrl.isEmpty) continue;
+      final Blast? blast = base.parNumero(serveur.numero);
+      if (blast == null || !blast.plan.startsWith('http')) continue;
+      final Uint8List? octets =
+          await transmetteur.telechargerPlan(serveur.planUrl);
+      final String? chemin = await _ecrirePlanLocal(serveur, octets);
+      if (chemin == null) continue;
+      base.poserPlanLocal(serveur.carte, chemin);
+      _dire('Plan telecharge - carte ${serveur.carte} du blast ${serveur.numero}');
+      notifyListeners();
+    }
+  }
+
+  /// Ecrit les octets d'un plan dans un fichier local du dossier documents.
+  ///
+  /// Le nom de fichier est stable (carte + extension) : une re-telecharge
+  /// ecrase le meme fichier au lieu d'accumuler des copies.
+  Future<String?> _ecrirePlanLocal(
+    BlastServeur serveur,
+    Uint8List? octets,
+  ) async {
+    if (octets == null || octets.isEmpty) return null;
+    try {
+      final Directory dossier = await getApplicationDocumentsDirectory();
+      final String chemin =
+          '${dossier.path}${Platform.pathSeparator}plan_${serveur.carte}.jpg';
+      final File fichier = File(chemin);
+      await fichier.writeAsBytes(octets, flush: true);
+      return chemin;
+    } catch (e) {
+      base.journaliser('PLAN ${serveur.carte} ECHEC $e');
+      return null;
+    }
   }
 
   /// Lit l'affectation choisie et validee par le serveur (destination,

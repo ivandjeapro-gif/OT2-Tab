@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OreTracking V2</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+</head>
+<body>
+    <div class="app">
+        <!-- TOP MENU BAR -->
+        <header class="menu-bar">
+            <div class="menu-left">
+                <span class="app-name">OreTracking</span>
+                <nav class="menu-items">
+                    <span class="menu-item">Files</span>
+                    <span class="menu-item">Edit</span>
+                    <span class="menu-item">Export</span>
+                    <span class="menu-item">Synchronisation</span>
+                    <span class="menu-item">Help</span>
+                </nav>
+            </div>
+            <div class="menu-right">
+                <span class="app-version">OreTracking V2</span>
+                <div class="window-controls">
+                    <button class="win-btn win-minimize"><i class="fas fa-window-minimize"></i></button>
+                    <button class="win-btn win-maximize"><i class="far fa-square"></i></button>
+                    <button class="win-btn win-close"><i class="fas fa-times"></i></button>
+                </div>
+            </div>
+        </header>
+        <div class="app-body">
+            <!-- HAMBURGER (mobile) -->
+            <button class="hamburger" id="hamburgerBtn" aria-label="Menu">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="sidebar-overlay" id="sidebarOverlay"></div>
+            <!-- LEFT SIDEBAR -->
+            <aside class="sidebar" id="sidebar">
+                <nav class="sidebar-nav">
+                    <div class="nav-top">
+                        <a class="sidebar-link" data-page="home">
+                            <i class="fas fa-home"></i>
+                            <span>Home</span>
+                        </a>
+                        <a class="sidebar-link active" data-page="live">
+                            <i class="fas fa-satellite-dish"></i>
+                            <span>Live</span>
+                        </a>
+                        <a class="sidebar-link" data-page="alerts">
+                            <i class="fas fa-bell"></i>
+                            <span>Alerts</span>
+                        </a>
+                        <a class="sidebar-link" data-page="inbox">
+                            <i class="fas fa-inbox"></i>
+                            <span>Inbox</span>
+                        </a>
+                    </div>
+                    <div class="nav-bottom">
+                        <a class="sidebar-link" data-page="settings">
+                            <i class="fas fa-cog"></i>
+                            <span>Settings</span>
+                        </a>
+                        <a class="sidebar-link" data-page="sync">
+                            <i class="fas fa-sync-alt"></i>
+                            <span>Sync</span>
+                        </a>
+                    </div>
+                </nav>
+                <div class="sidebar-user">
+                    <div class="user-avatar">
+                        <i class="fas fa-user-circle"></i>
+                    </div>
+                    <div class="user-info">
+                        <span class="user-name">Gaston Albert</span>
+                        <span class="user-email">gaston.albert@oresys.com</span>
+                    </div>
+                    <button class="btn-logout" title="Deconnexion">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </div>
+            </aside>
+            <!-- MAIN CONTENT AREA -->
+            <main class="content">
+                <!-- PAGE: HOME -->
+                <section class="page" id="page-home">
+                    <div class="page-home-grid">
+                        <div class="home-welcome">
+                            <h2>Bienvenue sur OreTracking V2</h2>
+                            <p>Systeme de tracking minier en temps reel</p>
+                        </div>
+                        <div class="home-stats">
+                            <div class="stat-card">
+                                <i class="fas fa-truck"></i>
+                                <div class="stat-value" id="homeStatEngins">-</div>
+                                <div class="stat-label">Engins actifs</div>
+                            </div>
+                            <div class="stat-card">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <div class="stat-value" id="homeStatAlertes">-</div>
+                                <div class="stat-label">Alertes</div>
+                            </div>
+                            <div class="stat-card">
+                                <i class="fas fa-gem"></i>
+                                <div class="stat-value" id="homeStatMinerais">-</div>
+                                <div class="stat-label">Minerais today</div>
+                            </div>
+                            <div class="stat-card">
+                                <i class="fas fa-coins"></i>
+                                <div class="stat-value" id="homeStatOre">-</div>
+                                <div class="stat-label">Ore today</div>
+                            </div>
+                        </div>
+                    </div>

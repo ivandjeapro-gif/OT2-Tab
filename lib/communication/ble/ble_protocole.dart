@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// Protocole applicatif BLE entre TAB 3 et TAB 2 (CDC §7, §9, §12).
@@ -30,6 +31,7 @@ class BleProtocole {
   static const String typeHandshakeOk = 'HANDSHAKE_OK';
   static const String typeHandshakeKo = 'HANDSHAKE_KO';
   static const String typeEvenement = 'EVENEMENT';
+  static const String typeNotification = 'NOTIFICATION';
   static const String typeAck = 'ACK';
   static const String typePing = 'PING';
 
@@ -115,6 +117,20 @@ class BleProtocole {
   static Map<String, Object?> ack({required String eventId}) =>
       <String, Object?>{'type': typeAck, 'event_id': eventId};
 
+  /// Notification serveur transmise sur le lien (Boss -> DT -> spotter).
+  /// Meme structure que la descente HTTP, compacte pour la MTU GATT.
+  static Map<String, Object?> notification({
+    required int id,
+    required String message,
+    String profil = '',
+  }) =>
+      <String, Object?>{
+        'type': typeNotification,
+        'id': id,
+        'profil': profil,
+        'message': message,
+      };
+
   /// Battement de coeur : permet aussi au client de mesurer le RSSI par lien.
   static Map<String, Object?> ping(String source) =>
       <String, Object?>{'type': typePing, 'source': source,
@@ -144,6 +160,41 @@ class ControleurProximite {
   })  : assert(seuilEntreeDbm > seuilSortieDbm),
         assert(mesuresPourDecider >= 1);
 
+  /// Variante exprimee **en metres** : la zone de connexion du profil
+  /// excavator est specifiee en distance (« rayon de 10 m »), pas en dBm.
+  ///
+  /// Le RSSI etant bruite, l'entree se fait au rayon exact et la sortie
+  /// un peu plus loin (hysteresis de 25 % : on ne sort pas pour un creux) :
+  /// - entree a [rayonM] metres ;
+  /// - sortie a `rayonM * 1.25` metres.
+  ///
+  /// La conversion RSSI <-> distance est l'inverse de [distanceEstimee]
+  /// (reference -59 dBm a 1 m). C'est une approximation d'ordre de grandeur :
+  /// elle sert a *decider* dans une zone, pas a mesurer au centimetre.
+  factory ControleurProximite.rayon({
+    required double rayonM,
+    int mesuresPourDecider = 3,
+    int dbmAUnMetre = -59,
+  }) {
+    final int entree = _dbmPourDistance(rayonM, dbmAUnMetre);
+    final int sortie = _dbmPourDistance(rayonM * 1.25, dbmAUnMetre);
+    return ControleurProximite(
+      seuilEntreeDbm: entree,
+      seuilSortieDbm: sortie,
+      mesuresPourDecider: mesuresPourDecider,
+    );
+  }
+
+  /// Conversion distance (m) -> RSSI (dBm), inverse de [distanceEstimee].
+  ///
+  /// Modele log-distance simplifie : `rssi = ref - 10 * n * log10(d)`, avec
+  /// `n = 2.5` (interieur ouvert, comme [distanceEstimee]).
+  static int _dbmPourDistance(double metres, int dbmAUnMetre) {
+    if (metres <= 1) return dbmAUnMetre;
+    final double dbm = dbmAUnMetre - 10 * 2.5 * (math.log(metres) / math.ln10);
+    return dbm.round();
+  }
+
   /// Seuil d'autorisation a l'entree (signal plus fort que ce niveau).
   final int seuilEntreeDbm;
 
@@ -167,7 +218,7 @@ class ControleurProximite {
   /// depend de l'antenne et des obstacles, la valeur sert a l'operateur, pas
   /// a un calcul.
   static int? distanceEstimee(int rssi) {
-    // Referenced a -59 dBm = ~1 m, facteur 2.5 typique en interieur ouvert.
+    // Reference a -59 dBm = ~1 m, facteur 2.5 typique en interieur ouvert.
     if (rssi >= 0) return null;
     final double d = (rssi + 59).abs() / (10 * 2.5);
     return d.round().clamp(1, 100);

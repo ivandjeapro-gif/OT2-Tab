@@ -1,6 +1,9 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+
+import '../models/models.dart';
 
 /// Enveloppe d'un evenement, telle que le CDC §12 la decrit.
 ///
@@ -70,8 +73,17 @@ class Enveloppe {
 }
 
 /// Reponse du serveur, qu'elle vienne du reseau ou d'un timeout.
+///
+/// Deux regimes coexistent :
+/// - **codes HTTP classiques** (serveur CDC complet) : 202 ACK, 409 doublon,
+///   4xx refus rejouable ;
+/// - **marqueur dans le corps** (serveur Apps Script, `server_OT`) : tout sort
+///   en 200 et c'est le JSON `{"ok": true|false}` qui porte la sémantique,
+///   avec `ack.status = SYNCED|DOUBLON` pour distinguer les deux succès.
+///   Le corps fait foi : un 200 avec `ok: false` est un refus rejouable,
+///   jamais un ACK — c'est ce qui preserve REQ-012 (aucune perte).
 class ReponseServeur {
-  const ReponseServeur({required this.code, this.erreur});
+  const ReponseServeur({required this.code, this.erreur, this.corps});
 
   /// 0 = aucun octet recu : reseau absent, timeout, hote inconnu.
   final int code;
@@ -79,14 +91,265 @@ class ReponseServeur {
   /// Motif lisible, pour le journal (§22).
   final String? erreur;
 
-  /// 2xx : accusé de reception (§14).
-  bool get ok => code >= 200 && code < 300;
+  /// Corps JSON decode quand disponible (serveur a marqueur `ok`).
+  final Object? corps;
 
-  /// 409 : deja recu. Idempotent (REQ-015), donc traite comme un succes.
-  bool get doublon => code == 409;
+  /// 2xx : accusé de reception (§14), sauf marqueur de refus dans le corps.
+  bool get okHttp => code >= 200 && code < 300;
+
+  /// Le serveur suit le regime a marqueur (`server_OT`).
+  bool get _aMarqueur => corps is Map<String, Object?>;
+
+  /// Succes effectif : 2xx, ou marqueur `ok: true` dans le corps.
+  bool get ok => _aMarqueur ? (corps as Map<String, Object?>)['ok'] == true : okHttp;
+
+  /// Deja recu. Idempotent (REQ-015), donc traite comme un succes.
+  bool get doublon {
+    if (!_aMarqueur) return code == 409;
+    final Object? ack = (corps as Map<String, Object?>)['ack'];
+    return ack is Map<String, Object?> && ack['status'] == 'DOUBLON';
+  }
 
   /// Ce qui fait sortir l'evenement de la file PENDING.
   bool get accepte => ok || doublon;
+}
+
+/// Un blast tel que le serveur le propose sur `GET /blasts`.
+///
+/// C'est un descriptif de travail, pas un etat de saisie : les lignes et le
+/// verrou sont du domaine local, le serveur ne les porte pas. `planUrl` est
+/// l'URL du plan JPG de la carte — le worker le telecharge ensuite vers un
+/// fichier local, le chemin duquel remplace l'asset dans `Blast.plan`.
+class BlastServeur {
+  const BlastServeur({
+    required this.numero,
+    required this.carte,
+    required this.blocs,
+    this.cartes = const <String>[],
+    this.libelleCarte = '',
+    this.planUrl = '',
+  });
+
+  final String numero;
+
+  /// Code de la carte unique du blast (cle de la table `cartes`).
+  ///
+  /// Conserve pour la **compatibilite ascendante** avec l'ancien format du
+  /// serveur (un blast = une carte). Le nouveau format utilise `cartes` (une
+  /// carte par RL) ; `carte` reste la premiere carte du tableau.
+  final String carte;
+
+  /// Liste des cartes couvertes par le blast (une par RL). Vide si le serveur
+  /// n'envoie que l'ancien champ `carte`, auquel cas [carte] fait foi.
+  final List<String> cartes;
+
+  /// Libelle lisible de la carte (« Fosse A - niveau 1 »), pose dans la
+  /// table `cartes` a la reception.
+  final String libelleCarte;
+
+  /// Numeros des blocs du blast, dans l'ordre du serveur.
+  final List<String> blocs;
+
+  /// URL du plan JPG de la carte, vide si le serveur n'en fournit pas.
+  final String planUrl;
+
+  /// Parse la reponse du serveur. Un champ manquant ne bloque pas la liste :
+  /// le blast arrive avec ce qui est la, le reste suivra a la prochaine
+  /// passe (un blast sans numero est simplement ignore).
+  ///
+  /// Formats acceptes pour les cartes :
+  /// - ancien : `carte: "X"` (une seule carte) ;
+  /// - nouveau : `cartes: ["X", "Y", ...]` (une par RL).
+  /// Si les deux sont presents, `cartes` est prioritaire.
+  static List<BlastServeur>? depuisJson(Object? brut) {
+    if (brut is! Map<String, Object?>) return null;
+    final Object? liste = brut['blasts'];
+    if (liste is! List) return null;
+    return <BlastServeur>[
+      for (final Object? item in liste)
+        if (item is Map<String, Object?> && item['numero'] != null)
+          BlastServeur(
+            numero: '${item['numero']}',
+            carte: '${item['carte'] ?? ''}',
+            cartes: <String>[
+              if (item['cartes'] is List)
+                for (final Object? c in item['cartes'] as List) '$c',
+            ],
+            libelleCarte: '${item['libelle_carte'] ?? ''}',
+            blocs: <String>[
+              if (item['blocs'] is List)
+                for (final Object? b in item['blocs'] as List) '$b',
+            ],
+            planUrl: '${item['plan_url'] ?? ''}',
+          ),
+    ];
+  }
+}
+
+/// Snapshot des référentiels administrés par le serveur.
+///
+/// La tablette ne crée pas elle-même de profils, équipements ou lots DT :
+/// ces listes sont fournies par les onglets `profils`, `equipements` et
+/// `types_dt` du serveur, puis remplacées localement à chaque sync valide.
+class ReferentielsServeur {
+  const ReferentielsServeur({
+    required this.profils,
+    required this.equipements,
+    required this.typesDT,
+  });
+
+  final List<Profil> profils;
+  final List<EquipementServeur> equipements;
+  final List<TypeDT> typesDT;
+
+  static List<Map<String, Object?>> _objets(Object? valeur) {
+    if (valeur is! List) return <Map<String, Object?>>[];
+    return <Map<String, Object?>>[
+      for (final Object? item in valeur)
+        if (item is Map<String, Object?>) item,
+    ];
+  }
+
+  static String _texte(Map<String, Object?> objet, String cle) =>
+      '${objet[cle] ?? ''}'.trim();
+
+  static int _entier(Map<String, Object?> objet, String cle, int defaut) =>
+      int.tryParse('${objet[cle] ?? ''}') ?? defaut;
+
+  factory ReferentielsServeur.depuisJson(Object? brut) {
+    if (brut is! Map<String, Object?> || brut['ok'] != true) {
+      throw const FormatException('Snapshot referentiels invalide');
+    }
+    if (brut['referentiels_version'] != 1) {
+      throw const FormatException('Version referentiels non supportee');
+    }
+    final List<Profil> profils = <Profil>[
+      for (final Map<String, Object?> p in _objets(brut['profils']))
+        if (_texte(p, 'code').isNotEmpty &&
+            _texte(p, 'libelle').isNotEmpty &&
+            _texte(p, 'role_cdc').isNotEmpty)
+          Profil(
+            code: _texte(p, 'code'),
+            libelle: _texte(p, 'libelle'),
+            titre: _texte(p, 'titre'),
+            roleCdc: _texte(p, 'role_cdc'),
+            icone: _texte(p, 'icone'),
+            ordre: _entier(p, 'ordre', 0),
+            actif: _entier(p, 'actif', 1) != 0,
+          ),
+    ];
+    final List<EquipementServeur> equipements = <EquipementServeur>[
+      for (final Map<String, Object?> e in _objets(brut['equipements']))
+        if (_texte(e, 'profil').isNotEmpty &&
+            _texte(e, 'id').isNotEmpty &&
+            _entier(e, 'actif', 1) != 0)
+          EquipementServeur(
+            profil: _texte(e, 'profil'),
+            id: _texte(e, 'id'),
+            nom: _texte(e, 'nom'),
+            actif: _entier(e, 'actif', 1) != 0,
+          ),
+    ];
+    final Map<String, List<String>> idsParType = <String, List<String>>{};
+    for (final Map<String, Object?> dt in _objets(brut['dts'])) {
+      final String type = _texte(dt, 'type');
+      final String id = _texte(dt, 'id');
+      if (type.isEmpty || id.isEmpty || _entier(dt, 'actif', 1) == 0) continue;
+      (idsParType[type] ??= <String>[]).add(id);
+    }
+    final List<TypeDT> types = <TypeDT>[
+      for (final MapEntry<String, List<String>> entry in idsParType.entries)
+        TypeDT(code: entry.key, ids: List<String>.unmodifiable(entry.value)),
+    ];
+    // Un payload tronque ou mal formé ne doit pas vider le référentiel local.
+    final Set<String> codesProfils = profils.map((Profil p) => p.code).toSet();
+    final bool profilsUniques = codesProfils.length == profils.length;
+    final bool equipementsRattaches = equipements.every(
+      (EquipementServeur e) => codesProfils.contains(e.profil),
+    );
+    final Set<String> codesTypes = types.map((TypeDT t) => t.code).toSet();
+    final Set<String> typesAvecDT = idsParType.keys.toSet();
+    final bool profilsActifsEquipes = profils
+        .where((Profil p) => p.actif)
+        .every((Profil p) => equipements.any(
+              (EquipementServeur e) => e.profil == p.code && e.actif,
+            ));
+    final List<String> ids = types.expand((TypeDT t) => t.ids).toList();
+    final bool idsUniques = ids.toSet().length == ids.length;
+    if (profils.isEmpty ||
+        equipements.isEmpty ||
+        types.isEmpty ||
+        !profilsUniques ||
+        !equipementsRattaches ||
+        !profilsActifsEquipes ||
+        !idsUniques ||
+        typesAvecDT.length != types.length ||
+        types.any((TypeDT t) => t.ids.isEmpty) ||
+        codesTypes.length != types.length) {
+      throw const FormatException('Snapshot referentiels incomplet ou incoherent');
+    }
+    return ReferentielsServeur(
+      profils: List<Profil>.unmodifiable(profils),
+      equipements: List<EquipementServeur>.unmodifiable(equipements),
+      typesDT: List<TypeDT>.unmodifiable(types),
+    );
+  }
+}
+
+/// Equipement enrôle fourni par le serveur (un profil, identifiant, nom).
+class EquipementServeur {
+  const EquipementServeur({
+    required this.profil,
+    required this.id,
+    required this.nom,
+    this.actif = true,
+  });
+
+  final String profil;
+  final String id;
+  final String nom;
+  final bool actif;
+}
+
+/// Une notification serveur (canal Boss -> spotter).
+///
+/// Le Boss ecrit depuis son bureau, le spotter la lit au prochain poll.
+/// `profil` vide = pour tous les profils ; sinon cible le profil nomme
+/// (`spotter`, `dt`, `excavator`). `id` est croissant cote serveur : c'est
+/// le curseur de reprise, jamais genere par le client.
+class NotificationServeur {
+  const NotificationServeur({
+    required this.id,
+    required this.message,
+    this.profil = '',
+    this.horodatage = '',
+  });
+
+  final int id;
+
+  /// Profil cible, vide = diffusion a tous.
+  final String profil;
+  final String message;
+  final String horodatage;
+
+  /// Parse la reponse `?action=notifications&depuis=N` du serveur.
+  /// Rend `null` si le format est inattendu (le curseur du client ne
+  /// bouge alors pas, une erreur ne perd jamais un message).
+  static List<NotificationServeur>? depuisJson(Object? brut) {
+    if (brut is! Map<String, Object?>) return null;
+    final Object? liste = brut['notifications'];
+    if (liste is! List) return null;
+    return <NotificationServeur>[
+      for (final Object? item in liste)
+        if (item is Map<String, Object?> && item['id'] != null)
+          NotificationServeur(
+            id: int.tryParse('${item['id']}') ?? 0,
+            message: '${item['message'] ?? ''}',
+            profil: '${item['profil'] ?? ''}',
+            horodatage: '${item['horodatage'] ?? ''}',
+          ),
+    ];
+  }
 }
 
 /// Affectation courante, choisie **et validee par le serveur**.
@@ -119,6 +382,26 @@ abstract class Transmetteur {
   /// aucun champ rend egalement `null`.
   Future<Affectation?> lireAffectation();
 
+  /// Lit les référentiels administrés par le serveur (profils, équipements,
+  /// familles/identifiants de DT) : `GET ?action=referentiels` en Apps Script.
+  /// `null` = erreur réseau/format (conserver l'état local); un objet valide,
+  /// même vide, représente un snapshot complet et remplace les listes gérées.
+  Future<ReferentielsServeur?> lireReferentiels();
+
+  /// Lit la liste des blasts du site : `GET {api_base}/blasts` (contrat §8).
+  ///
+  /// C'est la descente serveur qui alimente les listes du spotter (blasts,
+  /// blocs, cartes). `null` = rien a changer (404, erreur, reseau absent) :
+  /// la base locale garde ses blasts deja connus. Une liste vide rendue (et
+  /// non `null`) signifie « le serveur ne propose rien pour l'instant ».
+  Future<List<BlastServeur>?> lireBlasts();
+
+  /// Lit les notifications serveur posterieures a [depuis] (canal Boss ->
+  /// spotter) : `GET {api_base}/notifications?depuis=<id>`. `null` = rien a
+  /// changer (erreur, reseau absent) ; une liste vide rendue = aucun
+  /// message plus recent que [depuis].
+  Future<List<NotificationServeur>?> lireNotifications({required int depuis});
+
   /// Dernier retour reseau observe : `true` = le serveur a repondu,
   /// `false` = aucune reponse (reseau absent, timeout, hote inconnu),
   /// `null` = rien n'a encore ete tente.
@@ -127,6 +410,23 @@ abstract class Transmetteur {
   /// a repondu de l'autre cote », pas « la file est vide ». Les doubles de
   /// test n'ont pas a l'implementer.
   bool? get serveurRepondu => null;
+
+  /// Telecharge le plan JPG d'une carte depuis [url].
+  ///
+  /// `null` = echec (reseau, 404, corps vide) : le plan reste a son etat
+  /// precedent, l'ecran affiche son repli (« Plan introuvable »).
+  Future<Uint8List?> telechargerPlan(String url) async => null;
+
+  /// Diagnostic de deploiement du serveur central (`GET ?action=sante`),
+  /// pour valider la chaine complete tablette -> serveur Apps Script sans
+  /// attendre la premiere passe de synchro.
+  ///
+  /// Rend un message lisible :
+  /// - texte `OK - ...` : le serveur a repondu avec `ok: true` (resume des
+  ///   onglets Drive, pistes, plans) ;
+  /// - texte `ERREUR - ...` : HTTP/JSON invalide, jeton refuse ou serveur
+  ///   injoignable.
+  Future<String> diagnosticSante();
 }
 
 /// Transmetteur reel : POST JSON vers `{api_base}/evenements` (§14).
@@ -166,10 +466,16 @@ class TransmetteurHttp implements Transmetteur {
       );
     }
     final String? jeton = _meta('api_token');
+    // Deux regimes d'URL, comme pour les GET (voir [_url]) : le chemin CDC
+    // complet `/evenements`, ou la Web App Apps Script avec la route en
+    // parametre et le jeton en query (en-tetes invisibles cote serveur).
+    final String url = _racine()!.endsWith('/exec') || _racine()!.endsWith('/dev')
+        ? '$racine?action=evenement&token=${jeton ?? ''}'
+        : '$racine/evenements';
     try {
       final http.Response reponse = await _client
           .post(
-            Uri.parse('$racine/evenements'),
+            Uri.parse(url),
             headers: <String, String>{
               'Content-Type': 'application/json; charset=utf-8',
               if (jeton != null && jeton.isNotEmpty)
@@ -184,6 +490,7 @@ class TransmetteurHttp implements Transmetteur {
       _serveurRepondu = true;
       return ReponseServeur(
         code: reponse.statusCode,
+        corps: _json(reponse.body),
         erreur: reponse.statusCode >= 400 && reponse.statusCode != 409
             ? _court(reponse.body)
             : null,
@@ -191,6 +498,18 @@ class TransmetteurHttp implements Transmetteur {
     } catch (e) {
       _serveurRepondu = false;
       return ReponseServeur(code: 0, erreur: _court('$e'));
+    }
+  }
+
+  /// Corps JSON decode, ou null si le corps n'est pas du JSON : le regime
+  /// a marqueur (`server_OT`) n'est reconnu que sur un vrai objet JSON.
+  Object? _json(String corps) {
+    final String t = corps.trim();
+    if (!t.startsWith('{')) return null;
+    try {
+      return jsonDecode(t);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -205,49 +524,164 @@ class TransmetteurHttp implements Transmetteur {
   }
 
   @override
-  Future<Affectation?> lireAffectation() async {
+  Future<List<BlastServeur>?> lireBlasts() async {
+    final Object? json = await _getJson(_url('blasts'));
+    if (json == null) return null;
+    return BlastServeur.depuisJson(json);
+  }
+
+  @override
+  Future<List<NotificationServeur>?> lireNotifications({required int depuis}) async {
+    final Object? json = await _getJson(_url('notifications&depuis=$depuis'));
+    if (json == null) return null;
+    return NotificationServeur.depuisJson(json);
+  }
+
+  @override
+  Future<Uint8List?> telechargerPlan(String url) async {
+    if (url.isEmpty) return null;
+    try {
+      final http.Response reponse = await _client
+          .get(Uri.parse(url), headers: _enTetes)
+          .timeout(delai);
+      _serveurRepondu = true;
+      if (reponse.statusCode != 200 || reponse.bodyBytes.isEmpty) return null;
+      return reponse.bodyBytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// En-tetes du regime CDC complet (servent aussi au regime Apps Script,
+  /// qui les ignore silencieusement — jamais d'erreur a les envoyer).
+  Map<String, String> get _enTetes => <String, String>{
+        if (_meta('api_token')?.isNotEmpty ?? false)
+          'Authorization': 'Bearer ${_meta('api_token')}',
+        'X-Protocol-Version': _meta('vers_protocole') ?? '1.0',
+      };
+
+  /// URL d'un endpoint. Deux regimes :
+  /// - CDC complet : `{api_base}/blasts` ;
+  /// - Apps Script (`server_OT`) : `{api_base}?action=blasts&token=...`
+  ///   (la Web App n'a qu'une URL fixe, le jeton voyage en query car les
+  ///   en-tetes sont invisibles). Le regime est detecte sur la forme de
+  ///   `api_base` : une URL qui finit par `/exec` est une Web App.
+  String _url(String action) {
     final String? racine = _racine();
-    if (racine == null) return null;
-    final String? jeton = _meta('api_token');
-    // Une reponse HTTP, meme vide ou illisible, prouve que le serveur est
-    // la : seuls un timeout ou un hote absent comptent comme « aucun retour ».
+    if (racine == null) return '';
+    final String jeton = _meta('api_token') ?? '';
+    if (racine.endsWith('/exec') || racine.endsWith('/dev')) {
+      return '$racine?action=$action&token=$jeton';
+    }
+    return '$racine/$action';
+  }
+
+  /// GET + decode JSON, avec la meme discipline que les autres lectures :
+  /// un defaut (404, 5xx, timeout, corps illisible) rend `null` et rien
+  /// n'efface ce que la base connait deja (REQ-012).
+  Future<Object?> _getJson(String url) async {
+    if (url.isEmpty) return null;
     bool reponseRecue = false;
     try {
       final http.Response reponse = await _client
-          .get(
-            Uri.parse('$racine/affectation'),
-            headers: <String, String>{
-              if (jeton != null && jeton.isNotEmpty)
-                'Authorization': 'Bearer $jeton',
-              'X-Protocol-Version': _meta('vers_protocole') ?? '1.0',
-            },
-          )
+          .get(Uri.parse(url), headers: _enTetes)
           .timeout(delai);
       reponseRecue = true;
       _serveurRepondu = true;
-      // 404 = pas d'affectation en cours, 4xx/5xx = serveur en defaut :
-      // dans les deux cas on conserve la valeur deja connue, jamais on
-      // n'efface une destination pour une erreur de passage.
       if (reponse.statusCode != 200) return null;
-      final Object? brut = jsonDecode(reponse.body);
-      if (brut is! Map<String, Object?>) return null;
-      final Object? bloc = brut['affectation'];
-      if (bloc is! Map<String, Object?>) return null;
-
-      final Map<String, String> champs = <String, String>{};
-      bloc.forEach((String cle, Object? valeur) {
-        if (valeur != null) champs[cle] = '$valeur';
-      });
-      if (champs.isEmpty) return null;
-      final Object? valideLe = brut['valide_le'];
-      return Affectation(
-        champs: champs,
-        valideLe: valideLe == null ? null : '$valideLe',
-      );
+      final String t = reponse.body.trim();
+      if (!t.startsWith('{')) return null;
+      try {
+        final Object? json = jsonDecode(t);
+        // Marqueur de refus (ok:false) : une erreur reseau ou de token ne
+        // doit jamais passer pour une donnee vide.
+        if (json is Map<String, Object?> && json['ok'] == false) return null;
+        return json;
+      } catch (_) {
+        return null;
+      }
     } catch (_) {
-      // Reseau absent, timeout, corps illisible : rien n'est perdu (REQ-012).
+      // Reseau absent, timeout, corps illisible : la liste locale est
+      // conservee telle quelle (REQ-012).
       _serveurRepondu = reponseRecue;
       return null;
+    }
+  }
+
+  @override
+  Future<ReferentielsServeur?> lireReferentiels() async {
+    final Object? brut = await _getJson(_url('referentiels'));
+    if (brut == null) return null;
+    try {
+      return ReferentielsServeur.depuisJson(brut);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  @override
+  Future<Affectation?> lireAffectation() async {
+    final Object? brut = await _getJson(_url('affectation'));
+    if (brut is! Map<String, Object?>) return null;
+    final Object? bloc = brut['affectation'];
+    if (bloc is! Map<String, Object?>) return null;
+
+    final Map<String, String> champs = <String, String>{};
+    bloc.forEach((String cle, Object? valeur) {
+      if (valeur != null) champs[cle] = '$valeur';
+    });
+    if (champs.isEmpty) return null;
+    final Object? valideLe = brut['valide_le'];
+    return Affectation(
+      champs: champs,
+      valideLe: valideLe == null ? null : '$valideLe',
+    );
+  }
+
+  /// Diagnostic `GET ?action=sante` (ou `{api_base}/sante` en regime CDC),
+  /// meme double lecture d'URL que les autres GET.
+  @override
+  Future<String> diagnosticSante() async {
+    final String url = _url('sante');
+    if (url.isEmpty) {
+      return 'ERREUR - api_base absente des parametres : rien a tester';
+    }
+    bool recu = false;
+    try {
+      final http.Response reponse = await _client
+          .get(Uri.parse(url), headers: _enTetes)
+          .timeout(delai);
+      recu = true;
+      _serveurRepondu = true;
+      final String t = reponse.body.trim();
+      if (reponse.statusCode != 200) {
+        return 'ERREUR - HTTP ${reponse.statusCode} : ${_court(reponse.body)}';
+      }
+      if (!t.startsWith('{')) {
+        return 'ERREUR - reponse non JSON (HTTP ${reponse.statusCode})';
+      }
+      final Object? json = jsonDecode(t);
+      if (json is! Map<String, Object?>) {
+        return 'ERREUR - corps JSON inattendu';
+      }
+      if (json['ok'] != true) {
+        return 'ERREUR - ${json['erreur'] ?? 'refus du serveur'}';
+      }
+      // Resume du diagnostic serveur : onglets, pistes, plans, base_url.
+      final Object? onglets = json['onglets'];
+      final Object? pistes = json['pistes'];
+      final Object? plans = json['plans'];
+      final String resume = <String>[
+        if (onglets is Map<String, Object?>)
+          'onglets: ${onglets.length} lu(s)',
+        if (pistes != null) 'pistes: $pistes',
+        if (plans != null) 'plans: $plans',
+      ].join(', ');
+      return 'OK - serveur ${json['service'] ?? 'Apps Script'} joignable '
+          '(HTTP ${reponse.statusCode})${resume.isEmpty ? '' : ' - $resume'}';
+    } catch (e) {
+      _serveurRepondu = recu;
+      return 'ERREUR - serveur injoignable : ${_court('$e')}';
     }
   }
 
@@ -271,9 +705,23 @@ class TransmetteurFactice implements Transmetteur {
   /// Enveloppes recues, dans l'ordre.
   final List<Enveloppe> appels = <Enveloppe>[];
 
+  /// Snapshot de referentiels rendu a chaque [lireReferentiels].
+  ReferentielsServeur? referentiels;
+
   /// Affectation rendue a chaque [lireAffectation] : `null` joue un serveur
   /// muet, et le conservateur doit alors garder la valeur connue.
   Affectation? affectation;
+
+  /// Blasts rendus par [lireBlasts] : `null` joue un serveur qui ne
+  /// propose rien (defaut, reseau absent) — la base locale ne change pas.
+  List<BlastServeur>? blasts;
+
+  /// Notifications rendues par [lireNotifications] : `null` joue un serveur
+  /// muet, le curseur du client ne bouge alors pas.
+  List<NotificationServeur>? notifications;
+
+  /// Octets rendus par [telechargerPlan], indexe par l'URL demandee.
+  final Map<String, Uint8List> plans = <String, Uint8List>{};
 
   /// Nombre de lectures, pour verifier la cadence du worker.
   int nombreDeLectures = 0;
@@ -298,6 +746,34 @@ class TransmetteurFactice implements Transmetteur {
     _serveurRepondu = reponse.code > 0;
     return reponse;
   }
+
+  @override
+  Future<ReferentielsServeur?> lireReferentiels() async {
+    nombreDeLectures++;
+    _serveurRepondu = reponse.code > 0;
+    return referentiels;
+  }
+
+  @override
+  Future<List<BlastServeur>?> lireBlasts() async {
+    nombreDeLectures++;
+    _serveurRepondu = reponse.code > 0;
+    return blasts;
+  }
+
+  @override
+  Future<List<NotificationServeur>?> lireNotifications({required int depuis}) async {
+    nombreDeLectures++;
+    _serveurRepondu = reponse.code > 0;
+    return notifications;
+  }
+
+  @override
+  Future<Uint8List?> telechargerPlan(String url) async => plans[url];
+
+  @override
+  Future<String> diagnosticSante() async =>
+      'ERREUR - test serveur indisponible dans le transmetteur factice';
 
   @override
   Future<Affectation?> lireAffectation() async {

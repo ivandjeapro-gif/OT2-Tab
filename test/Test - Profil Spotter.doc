@@ -1,0 +1,80 @@
+Test - Profil Spotter
+Check-list pratique d’audit du profil SPOTTER, du serveur Apps Script et des données Google Sheets / Drive
+Objectif
+Cette check-list permet de vérifier le fonctionnement actuel du profil SPOTTER, de la chaîne serveur Apps Script et des ressources Google Sheets et Drive. Effectuer d’abord les essais dans un environnement de test distinct de la production : certains envois peuvent être définitifs.
+
+1. Préparer un environnement de test
+☐ Créer un Google Sheet dédié aux tests, distinct du Sheet de production.
+☐ Créer un dossier Drive de test avec au moins un plan JPG connu, nommé selon la convention attendue, par exemple plan_A1.jpg.
+☐ Renseigner les identifiants de test et un jeton dédié dans server_OT. Ne pas réutiliser le jeton de production.
+☐ Déployer le script en Web App et configurer dans l’application : api_base = URL de déploiement se terminant par /exec ; api_token = jeton correspondant au script.
+☐ Noter la version du script déployée, l’URL et l’heure du test. Ne jamais inclure le jeton dans des notes ou captures partagées.
+
+2. Vérifier Google Sheets, Drive et le diagnostic serveur
+Dans l’écran Paramètres :
+☐ Appuyer sur « Tester le serveur » avec la configuration correcte.
+☐ Vérifier que le résultat indique OK et que les onglets, les pistes et les plans sont accessibles.
+☐ Vérifier dans le Sheet la présence des onglets : evenements, affectation, blasts, blocs, cartes, positions, journal et notifications.
+☐ Vérifier les en-têtes des onglets. L’onglet evenements ne doit pas avoir d’en-tête de données ajouté par erreur.
+☐ Remplacer temporairement le jeton par une valeur invalide : le test doit signaler un refus. Restaurer ensuite le bon jeton et vérifier que le test réussit.
+☐ Tester une URL incorrecte ou un serveur indisponible : l’application doit afficher une erreur et ne pas signaler de faux succès.
+☐ Vérifier que le compte Google utilisé par Apps Script peut accéder au Sheet, au dossier Drive des plans et au fichier GeoJSON des pistes.
+☐ Vérifier que le plan de test est téléchargeable, lisible dans l’application, puis consultable hors ligne après téléchargement.
+Note : le diagnostic /sante vérifie l’accès au serveur et aux ressources déclarées. Il ne prouve pas à lui seul qu’un événement de mission a été correctement écrit dans le Sheet.
+
+3. Vérifier la réception des blasts
+☐ Ajouter ou préparer dans le Sheet de test un blast avec sa carte et ses blocs.
+☐ Lancer une synchronisation depuis la tablette.
+☐ Vérifier que le blast et ses blocs apparaissent dans « Select blast » et « Select bloc ».
+☐ Vérifier que le plan de la carte est chargé et consultable.
+☐ Relancer la synchronisation : aucun doublon de blast ou de bloc ne doit être créé.
+☐ Couper le réseau : les blasts déjà reçus et le plan local doivent rester consultables.
+
+4. Vérifier le workflow SPOTTER et les photos
+Sur une tablette cible, avec un blast et un bloc de test :
+☐ Ajouter une ligne sans photo, puis une ligne avec une photo prise par la caméra.
+☐ Ajouter aussi une image depuis la galerie.
+☐ Vérifier les champs DT, ID DT, commentaire, heure et contexte blast/bloc dans le tableau.
+☐ Ouvrir « Captures » et vérifier que « Toutes » affiche les lignes du blast courant.
+☐ Vérifier que le filtre « Avec photo » permet de retrouver les lignes photographiées.
+☐ Vérifier que le filtre « Sans photo » permet de retrouver les lignes sans capture.
+☐ Toucher une tuile pour ouvrir l’image en grand.
+☐ Refuser la permission caméra ou galerie au premier usage : le refus doit être compréhensible et ne doit pas faire perdre le formulaire.
+☐ Refaire l’essai après un refus permanent et vérifier le comportement proposé à l’utilisateur.
+☐ Fermer puis relancer l’application : vérifier que les lignes et leurs photos locales sont toujours présentes.
+☐ Verrouiller le bloc et confirmer le nombre de lignes et le compte « sans photo ».
+☐ Vérifier qu’on ne peut plus ajouter de ligne à ce bloc, mais qu’un autre bloc reste saisissable.
+
+5. Vérifier l’envoi réel vers Apps Script
+Test essentiel à confirmer sur l’environnement cible :
+☐ Laisser l’appareil en ligne et déclencher « Envoyer » selon le mode configuré.
+☐ Vérifier le périmètre annoncé dans la confirmation : blast, bloc ou blocs verrouillés.
+☐ Confirmer l’envoi et attendre que la file d’événements se vide.
+☐ Dans le Sheet evenements, vérifier l’ajout d’une ligne contenant le bon event_id, source_device, event_type, horodatage et payload.
+☐ Vérifier notamment les événements LINE_ADD, BLAST_LOCK et BLAST_SEND.
+☐ Pour une ligne avec photo, vérifier que la photo est présente dans le payload reçu (une longue chaîne base64 peut être attendue).
+☐ Vérifier l’accusé de réception côté client : l’événement doit sortir de l’état en attente.
+☐ Effectuer un test de doublon contrôlé si possible avec le même event_id : le serveur doit traiter l’événement comme doublon sans créer une seconde ligne.
+☐ Couper le réseau avant un envoi : les événements doivent rester en attente puis repartir après rétablissement.
+☐ Tester un mauvais jeton, un payload rejeté et un timeout : aucune donnée ne doit disparaître de la file locale.
+
+6. Vérifier historique et compte-rendu
+☐ Ouvrir « Historique » et vérifier que le journal local contient les écritures pertinentes.
+☐ Vérifier que les notifications Boss reçues apparaissent dans l’onglet correspondant.
+☐ Générer un compte-rendu et vérifier les totaux par blast et par bloc.
+☐ Vérifier que le statut « envoyé », les blocs verrouillés, les lignes sans photo et les événements encore en attente reflètent la situation réelle.
+☐ Copier le compte-rendu, le coller dans une autre application et vérifier le texte obtenu.
+
+7. Tester les appareils et tailles d’écran
+☐ Refaire les essais caméra et galerie sur chaque modèle Android réellement utilisé et, idéalement, sur les versions Android présentes dans le parc.
+☐ Tester les écrans en paysage et en portrait.
+☐ Vérifier la lisibilité et le défilement des boutons, tableaux, visionneuse et dialogues.
+☐ Tester un bloc avec beaucoup de lignes et de photos pour repérer les lenteurs, l’utilisation mémoire élevée ou un affichage instable.
+
+Critères de validation du niveau 7/10
+Le niveau 7/10 peut être considéré comme vérifié lorsque les trois scénarios suivants ont réussi sur une tablette cible :
+1. Caméra et galerie : permissions runtime, capture et relecture après redémarrage.
+2. Hors ligne puis reprise : une ligne reste en local sans réseau et part après reconnexion.
+3. Envoi réel : l’événement apparaît dans le Sheet de test, le serveur renvoie un accusé de réception et la file locale est mise à jour.
+
+Les tests automatisés couvrent le diagnostic serveur et une partie de l’interface. Les vérifications du Google Sheet, de Drive et de la tablette doivent être exécutées dans l’environnement Google et sur les appareils réellement utilisés.

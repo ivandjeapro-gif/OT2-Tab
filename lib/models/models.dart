@@ -121,16 +121,24 @@ class TypeDT {
 /// Toutes les lignes saisies dans le tableau du spotter appartiennent au bloc
 /// selectionne, jamais a un autre.
 ///
-/// Le bloc ne porte pas de carte : elle appartient au blast, donc tous les
-/// blocs d'un meme blast travaillent sur la meme carte.
+/// Un bloc porte sa propre carte : un blast peut couvrir plusieurs cartes
+/// (une par RL = Relative Level = 1er segment du code carte), et chaque bloc
+/// appartient a l'une d'elles. Cela permet le filtrage par RL cote UI.
 class BlocTravail {
   BlocTravail({
     required this.numero,
+    required this.carte,
     List<LigneBlast>? lignes,
     this.verrouille = false,
   }) : lignes = lignes ?? <LigneBlast>[];
 
   final String numero;
+
+  /// Code de la carte sur laquelle travaille ce bloc.
+  ///
+  /// Le RL est derive de cette carte via `decoderCarte(carte)?.flitch` :
+  /// on evite une colonne redondante pour limiter les risques d'incoherence.
+  final String carte;
 
   final List<LigneBlast> lignes;
 
@@ -145,28 +153,52 @@ class BlocTravail {
   int get nombreLignes => lignes.length;
 }
 
-/// Un blast : donne un nombre de blocs, une seule carte et son plan JPG.
+/// Un blast : couvre plusieurs cartes (une par RL), chacune avec ses blocs.
 ///
-/// La carte est liee au blast et non au bloc : selectionner le blast la
-/// selectionne de facto, il n'y a rien a choisir a part. Les blocs heritent
-/// tous de cette carte.
+/// Architecture de selection : Blast -> RL -> Bloc. Le RL est le premier
+/// segment du code carte (flitch). La nomenclature cote serveur etendue est :
+/// `flitch_activite_site_profDebut_profFin_pattern[_nbBlocs]`.
 class Blast {
   Blast({
     required this.numero,
     required this.blocs,
-    required this.carte,
+    required this.cartes,
     required this.plan,
     this.envoye = false,
   });
 
+  /// Constructeur retrocompatible : un seul `carte` (ancien format) est
+  /// enveloppe dans une liste d'une carte. Les blasts envoyes par un serveur
+  /// non encore migre vers le nouveau format continuent de fonctionner.
+  Blast.legacy({
+    required String numero,
+    required List<BlocTravail> blocs,
+    required String carte,
+    required String plan,
+    bool envoye = false,
+  }) : this(
+          numero: numero,
+          blocs: blocs,
+          cartes: <String>[carte],
+          plan: plan,
+          envoye: envoye,
+        );
+
   final String numero;
   final List<BlocTravail> blocs;
 
-  /// Code de la carte unique du blast, cle etrangere vers la table des cartes.
-  final String carte;
+  /// Codes des cartes couvertes par ce blast (une par RL).
+  ///
+  /// Mutable : la reception serveur peut requalifier la liste des cartes d'un
+  /// blast deja connu (jusqu'ici l'ecriture locale n'y touche jamais).
+  List<String> cartes;
 
-  /// Fichier JPG du plan de [carte] : le blast ne detient que celui-ci.
-  final String plan;
+  /// Fichier JPG du plan : le blast ne detient que celui de la carte
+  /// selectionnee via le RL courant. Vide tant qu'aucun RL n'est choisi.
+  ///
+  /// Mutable pour la meme raison : le worker y pose le chemin du fichier
+  /// local une fois le plan telecharge du serveur.
+  String plan;
 
   /// Vrai quand **tous** les blocs de ce blast sont verrouilles.
   ///
@@ -174,6 +206,11 @@ class Blast {
   /// ne fait que dire si le blast est integralement ferme, ce que lit le
   /// mode d'envoi `blast` et les affichages « - verrouille ».
   bool get verrouille => blocs.isNotEmpty && blocs.every((b) => b.verrouille);
+
+  /// Compatibilite ascendante : renvoie la premiere carte du blast, ou `''`.
+  ///
+  /// A eviter dans le nouveau code : preferer [cartes] et [carteDuRl].
+  String get carte => cartes.isNotEmpty ? cartes.first : '';
 
   /// Vrai quand les donnees de ce blast ont ete transmises au point d'acces.
   ///
@@ -183,6 +220,38 @@ class Blast {
 
   /// Nombre de blocs du blast, affiche dans la selection.
   int get nombreBlocs => blocs.length;
+
+  /// Nombre de cartes (RL) couvertes par le blast.
+  int get nombreCartes => cartes.length;
+
+  /// RL distincts des cartes du blast, dans l'ordre de la liste [cartes].
+  ///
+  /// Vide si aucune carte n'est exploitable (nomenclature invalide).
+  /// Un meme RL peut theoriquement apparaitre plusieurs fois si le serveur
+  /// envoyait deux cartes au meme flitch, mais on de-duplique en conservant
+  /// l'ordre.
+  List<String> get rls {
+    final List<String> v = <String>[];
+    for (final String code in cartes) {
+      final String? rl = decoderCarte(code)?.flitch;
+      if (rl == null || rl.isEmpty) continue;
+      if (!v.contains(rl)) v.add(rl);
+    }
+    return v;
+  }
+
+  /// Carte correspondant au RL donne, ou null si aucune carte ne matche.
+  String? carteDuRl(String rl) {
+    for (final String code in cartes) {
+      if (decoderCarte(code)?.flitch == rl) return code;
+    }
+    return null;
+  }
+
+  /// Blocs dont la carte appartient au RL donne.
+  List<BlocTravail> blocsDuRl(String rl) => blocs
+      .where((BlocTravail b) => decoderCarte(b.carte)?.flitch == rl)
+      .toList(growable: false);
 
   BlocTravail? bloc(String numero) {
     for (final bloc in blocs) {
@@ -194,4 +263,72 @@ class Blast {
   /// Nombre de lignes du blast entier, tous blocs confondus.
   int get nombreLignes =>
       blocs.fold<int>(0, (total, bloc) => total + bloc.nombreLignes);
+}
+
+/// Resultat du decodage d'un code de carte selon la nomenclature du site.
+///
+/// Le 7ᵉ segment (`nbBlocs`) est **optionnel** : il vaut `null` sur les anciens
+/// codes a 6 segments (le caller retombe alors sur l'onglet `blocs` du serveur).
+class CarteDecodee {
+  const CarteDecodee({
+    required this.flitch,
+    required this.activite,
+    required this.site,
+    required this.profDebut,
+    required this.profFin,
+    required this.pattern,
+    this.nbBlocs,
+  });
+
+  final String flitch;
+  final String activite;
+  final String site;
+  final String profDebut;
+  final String profFin;
+  final String pattern;
+
+  /// Nombre de blocs/polygones portes par le nom (7ᵉ segment), ou `null`
+  /// si le code utilise l'ancien format a 6 segments.
+  final int? nbBlocs;
+}
+
+/// Decode un code de carte selon la nomenclature :
+///   `flitch_activite_site_profDebut_profFin_pattern[_nbBlocs]`
+///
+/// Retourne `null` si le code ne respecte pas la nomenclature (mauvais nombre
+/// de segments, profondeur non numerique, `nbBlocs` non entier strictement
+/// positif). Le caller decide alors quoi faire (rejet silencieux, journal,
+/// alerte UI).
+///
+/// Cote serveur (`server_OT` / `decoderCarte`) applique la meme regle ; cette
+/// version Dart sert aux validations et affichages locaux (par exemple comparer
+/// `nbBlocs` avec le nombre de blocs recus du serveur, ou deriver le RL d'un
+/// bloc depuis sa carte).
+CarteDecodee? decoderCarte(String? code) {
+  final String s = (code ?? '').trim();
+  if (s.isEmpty) return null;
+  final List<String> seg = s.split('_');
+  if (seg.length != 6 && seg.length != 7) return null;
+  if (seg[0].isEmpty || seg[1].isEmpty || seg[2].isEmpty || seg[5].isEmpty) {
+    return null;
+  }
+  final RegExp profondeur = RegExp(r'^[0-9.]+$');
+  if (!profondeur.hasMatch(seg[3]) || !profondeur.hasMatch(seg[4])) return null;
+  int? nbBlocs;
+  if (seg.length == 7) {
+    final RegExp entier = RegExp(r'^[0-9]+$');
+    if (!entier.hasMatch(seg[6])) return null;
+    final int? n = int.tryParse(seg[6]);
+    if (n == null || n < 1) return null;
+    nbBlocs = n;
+  }
+  return CarteDecodee(
+    flitch: seg[0],
+    activite: seg[1],
+    site: seg[2],
+    profDebut: seg[3],
+    profFin: seg[4],
+    pattern: seg[5],
+    nbBlocs: nbBlocs,
+  );
 }

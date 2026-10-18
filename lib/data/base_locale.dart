@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/models.dart';
 import '../communication/position/service_position.dart';
+import 'transmetteur.dart';
 
 /// Base de donnees locale de l'application.
 ///
@@ -19,24 +20,36 @@ import '../communication/position/service_position.dart';
 ///
 /// Tables (CDC §13, §12, §9, §23) :
 /// - `meta`        : versions application / protocole / modele (§23)
-/// - `profils`     : roles, libelles et rangs proposes au login (§2.3)
-/// - `equipements` : identifiants enrroles et leur role (REQ-002)
-/// - `cartes`, `positions`, `types_dt`, `ids_dt` : referentiel
+/// - `profils`, `equipements`, `types_dt`, `ids_dt` : snapshot serveur
+/// - `cartes`, `positions` : referentiels du site
 /// - `blasts`, `blocs`, `lignes` : le domaine du spotter
 /// - `journal`     : preuve des ecritures acceptees
 /// - `evenements`  : file PENDING / SENDING / SYNCED (REQ-014, §14)
 /// - `affectation` : destination / dumping area choisies par le serveur
 class BaseLocale {
-  /// [blasts] : liste de depart, vide en production (les blasts arrivent du
-  /// serveur) ; les tests l'injectent avec [blastsDemo] pour disposer des
-  /// memes 119/120/121 que la demo sans les semer pour les vrais utilisateurs.
+  /// Constructeur public : trivial, delegue immediatement a [_production] pour
+  /// les valeurs reelles. Le parametre `blasts` reste inject able uniquement
+  /// pour les tests : en production, [blastsDemo] n'est JAMAIS appele (sa
+  /// signature est `@visibleForTesting`) et la liste par defaut est vide.
+  ///
   /// La liste par defaut doit rester **modifiable** : [_recharger] la vide et
   /// la recharge depuis le disque (`const []` planterait sur `clear()`).
-  BaseLocale({List<Blast>? blasts})
-      : _typesDT = _typesDTInit(),
+  BaseLocale({List<Blast>? blasts}) : this._production(blasts: blasts);
+
+  /// Constructeur prive : definit les valeurs reelles (vides en production,
+  /// injectees par le snapshot serveur a la premiere synchronisation). Les
+  /// seeds de tests (libelles, coordonnees, blasts) ne sont JAMAIS appeles
+  /// d'ici : ils vivent dans [blastsDemo] (et eventuellement un futur
+  /// [fixturesDemo]) et restent confines aux cas de test.
+  ///
+  /// Toute nouvelle initialisation doit arriver ICI et nulle part ailleurs :
+  /// la separation constructeur / seeds garantit qu'aucune constante de demo
+  /// ne peut fuiter dans la base reelle.
+  BaseLocale._production({List<Blast>? blasts})
+      : _typesDT = <TypeDT>[],
         _carteLabel = _carteLabelsInit(),
         _positions = _positionsInit(),
-        _equipements = _equipementsInit(),
+        _equipements = <String, List<({String id, String nom})>>{},
         blasts = blasts ?? <Blast>[];
 
   /// Version du modele de donnees (CDC §23). Toute evolution du schema passe
@@ -53,7 +66,11 @@ class BaseLocale {
   /// - v6 : `blocs.verrouille` : le verrou porte sur la paire (blast, bloc),
   ///   plus sur le blast entier ; la colonne `blasts.verrouille` n'est plus
   ///   ecrite (elle reste en place sur les anciens fichiers, sans usage).
-  static const int versionModele = 6;
+  /// - v7 : table `notifications` : canal serveur -> tablette (le Boss du
+  ///   bureau y depose des messages que le spotter lit au prochain poll) ;
+  /// - v8 : les referentiels profils, equipements et familles/DT sont servis
+  ///   par le serveur et remplacent leurs valeurs locales.
+  static const int versionModele = 8;
 
   /// Roles CDC (REQ-002) : les trois valeurs possibles a l'enrolement.
   static const String roleTab1 = 'ROLE_TAB1';
@@ -64,7 +81,7 @@ class BaseLocale {
   static const Map<String, String> versions = <String, String>{
     'vers_app': '1.0.0',
     'vers_protocole': '1.0',
-    'vers_modele': '6.0',
+    'vers_modele': '8.0',
   };
 
   /// Modes d'envoi du bouton « Envoyer », choisis dans `meta.envoi_mode`
@@ -89,9 +106,8 @@ class BaseLocale {
     }
   }
 
-  /// Categories de DT. Chaque categorie porte son propre lot de numeros : c'est
-  /// ce qui rend le second menu dependant du premier.
-  final List<TypeDT> _typesDT;
+  /// Categories DT, remplacées atomiquement par le snapshot serveur valide.
+  List<TypeDT> _typesDT;
 
   /// Libelle lisible des codes de carte (A1 -> Fosse A - niveau 1).
   final Map<String, String> _carteLabel;
@@ -115,7 +131,8 @@ class BaseLocale {
   Future<void> _ouverture = Future<void>.value();
   Future<void> _fileEcritures = Future<void>.value();
 
-  /// Equipements enrroles, par code de profil (REQ-002).
+  /// Equipements enrroles, par code de profil (REQ-002), remplaces par snapshot.
+
   ///
   /// L'identifiant et le nom voyagent ensemble : ce sont les deux colonnes de
   /// la meme ligne `equipements`. Les deux menus de la connexion sont donc
@@ -124,12 +141,9 @@ class BaseLocale {
   /// role CDC de la meme ligne.
   final Map<String, List<({String id, String nom})>> _equipements;
 
-  /// Profils proposes au login (CDC §2.3), tries par [Profil.ordre].
-  ///
-  /// Lis dans la table `profils` : le bouton affiche le libelle de la
-  /// ligne, pas une chaine du code. Les valeurs de depart servent le
-  /// regime « memoire seule », ou aucun fichier n'est ouvert.
-  final List<Profil> _profils = _profilsInit();
+  /// Profils proposes au login (CDC §2.3), lus depuis le dernier snapshot
+  /// serveur validé. Vide tant qu'aucun snapshot n'a été reçu.
+  List<Profil> _profils = <Profil>[];
 
   /// Versions lues dans la table `meta`, renseinees des le demarrage (§23).
   final Map<String, String> _meta = <String, String>{...versions};
@@ -302,6 +316,8 @@ class BaseLocale {
     await db.execute(_tableAffectation);
     // Profils (§2.3) : boutons, titres et rangs du login.
     await db.execute(_tableProfils);
+    // Notifications serveur (v7) : canal Boss -> tablette.
+    await db.execute(_tableNotifications);
     await _semer(db);
   }
 
@@ -330,6 +346,18 @@ class BaseLocale {
       )
     ''';
 
+  /// Table notifications (v7) : messages deposés par le serveur (le Boss au
+  /// bureau), lus par la tablette au prochain poll. Le curseur `derniere_id`
+  /// vit dans `meta` : la reprise apres coupure ne repart jamais de zero.
+  static const String _tableNotifications = '''
+      CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY,
+        profil TEXT NOT NULL DEFAULT '',
+        message TEXT NOT NULL,
+        horodatage TEXT NOT NULL DEFAULT ''
+      )
+    ''';
+
   /// Evolution du schema (CDC §23 : version du modele de donnees).
   ///
   /// [de] est la version du fichier ouvert : chaque palier écrit sa migration
@@ -350,37 +378,17 @@ class BaseLocale {
         'meta',
         <String, Object?>{
           'cle': 'vers_modele',
-          'valeur': versions['vers_modele']!,
+          'valeur': '2.0',
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
     if (de < 3) {
-      // v3 : le menu « Name » lit la base. Les fichiers crees avant cette
-      // version portent `nom = ''` : on les complete depuis la meme source
-      // que le seed, pour ne pas laisser deux verites sur les equipements.
-      _equipementsInit().forEach((
-        String code,
-        List<({String id, String nom})> lot,
-      ) {
-        // A ce palier, la colonne `equipements.profil` n'existe pas encore :
-        // la cle reste le role CDC.
-        final String role = _roleDuCode(code) ?? '';
-        for (final ({String id, String nom}) e in lot) {
-          db.update(
-            'equipements',
-            <String, Object?>{'nom': e.nom},
-            where: 'role = ? AND id = ?',
-            whereArgs: <Object?>[role, e.id],
-          );
-        }
-      });
+      // v3 : la colonne nom existe deja dans le schema local; elle sera
+      // renseignee par le snapshot du serveur, sans injecter de valeurs en dur.
       await db.insert(
         'meta',
-        <String, Object?>{
-          'cle': 'vers_modele',
-          'valeur': versions['vers_modele']!,
-        },
+        <String, Object?>{'cle': 'vers_modele', 'valeur': '3.0'},
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
@@ -392,46 +400,25 @@ class BaseLocale {
         'meta',
         <String, Object?>{
           'cle': 'vers_modele',
-          'valeur': versions['vers_modele']!,
+          'valeur': '4.0',
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
     if (de < 5) {
-      // v5 : les boutons du login sortent de la base (§2.3). Le fichier
-      // d'avant n'a ni table `profils` ni colonne `equipements.profil` :
-      // on cree la table, on ajoute la colonne, puis on la remplit depuis
-      // le role deja enrrole — le role est la verite du CDC, le profil
-      // n'est que sa lecture par l'interface.
+      // v5 : tables de profils et lien profil/equipement.
       await db.execute(_tableProfils);
-      await db.execute(
-        "ALTER TABLE equipements ADD COLUMN profil TEXT NOT NULL DEFAULT ''",
+      final List<Map<String, Object?>> colonnes = await db.rawQuery(
+        'PRAGMA table_info(equipements)',
       );
-      for (final Profil profil in _profilsInit()) {
-        await db.update(
-          'equipements',
-          <String, Object?>{'profil': profil.code},
-          where: 'role = ?',
-          whereArgs: <Object?>[profil.roleCdc],
+      if (!colonnes.any((row) => row['name'] == 'profil')) {
+        await db.execute(
+          "ALTER TABLE equipements ADD COLUMN profil TEXT NOT NULL DEFAULT ''",
         );
-      }
-      final int dejaLa = Sqflite.firstIntValue(
-            await db.rawQuery('SELECT COUNT(*) FROM profils'),
-          ) ??
-          0;
-      if (dejaLa == 0) {
-        final Batch batch = db.batch();
-        for (final Profil profil in _profilsInit()) {
-          batch.insert('profils', _profilValeurs(profil));
-        }
-        await batch.commit(noResult: true);
       }
       await db.insert(
         'meta',
-        <String, Object?>{
-          'cle': 'vers_modele',
-          'valeur': versions['vers_modele']!,
-        },
+        <String, Object?>{'cle': 'vers_modele', 'valeur': '5.0'},
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
@@ -454,7 +441,31 @@ class BaseLocale {
         'meta',
         <String, Object?>{
           'cle': 'vers_modele',
-          'valeur': versions['vers_modele']!,
+          'valeur': '6.0',
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    if (de < 7) {
+      // v7 : canal de notifications serveur (Boss -> tablette).
+      await db.execute(_tableNotifications);
+      await db.insert(
+        'meta',
+        <String, Object?>{
+          'cle': 'vers_modele',
+          'valeur': '7.0',
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    if (de < 8) {
+      // v8 : les listes de reference sont resynchronisees depuis le serveur;
+      // les structures locales restent compatibles, sans migration destructive.
+      await db.insert(
+        'meta',
+        <String, Object?>{
+          'cle': 'vers_modele',
+          'valeur': '8.0',
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -467,23 +478,6 @@ class BaseLocale {
     _meta.forEach((String cle, String valeur) {
       batch.insert('meta', <String, Object?>{'cle': cle, 'valeur': valeur});
     });
-    for (final Profil profil in _profilsInit()) {
-      batch.insert('profils', _profilValeurs(profil));
-    }
-    _equipements.forEach((String code, List<({String id, String nom})> lot) {
-      final String role = _roleDuCode(code) ?? '';
-      for (final ({String id, String nom}) e in lot) {
-        batch.insert(
-          'equipements',
-          <String, Object?>{
-            'role': role,
-            'profil': code,
-            'id': e.id,
-            'nom': e.nom,
-          },
-        );
-      }
-    });
     _carteLabel.forEach((String code, String libelle) {
       batch.insert('cartes', <String, Object?>{'code': code, 'libelle': libelle});
     });
@@ -495,12 +489,6 @@ class BaseLocale {
         );
       },
     );
-    for (final TypeDT type in _typesDT) {
-      batch.insert('types_dt', <String, Object?>{'code': type.code});
-      for (final String id in type.ids) {
-        batch.insert('ids_dt', <String, Object?>{'code_type': type.code, 'id': id});
-      }
-    }
     await batch.commit(noResult: true);
 
     // Blasts, blocs et lignes : les identifiants AUTOINCREMENT doivent etre
@@ -509,7 +497,7 @@ class BaseLocale {
     for (final Blast blast in blasts) {
       await db.insert('blasts', <String, Object?>{
         'numero': blast.numero,
-        'carte': blast.carte,
+        'carte': blast.cartes.isNotEmpty ? blast.cartes.first : '',
         'plan': blast.plan,
         'envoye': blast.envoye ? 1 : 0,
       });
@@ -560,20 +548,41 @@ class BaseLocale {
         ),
       );
 
-    _profils
-      ..clear()
-      ..addAll(
-        (await db.query('profils', orderBy: 'ordre, rowid'))
-            .map(_profilLigne),
-      );
+    final List<Map<String, Object?>> lignesProfils =
+        await db.query('profils', orderBy: 'ordre, rowid');
+    if (lignesProfils.isNotEmpty) {
+      _profils
+        ..clear()
+        ..addAll(lignesProfils.map(_profilLigne));
+    }
+    final List<Map<String, Object?>> lignesTypes =
+        await db.query('types_dt', orderBy: 'rowid');
+    if (lignesTypes.isNotEmpty) {
+      _typesDT.clear();
+    }
+    for (final row in lignesTypes) {
+      final String code = row['code']! as String;
+      final List<String> ids = (await db.query(
+        'ids_dt',
+        where: 'code_type = ?',
+        whereArgs: <Object?>[code],
+        orderBy: 'rowid',
+      ))
+          .map((r) => r['id']! as String)
+          .toList();
+      _typesDT.add(TypeDT(code: code, ids: ids));
+    }
 
-    _equipements.clear();
-    for (final row in await db.query('equipements', orderBy: 'rowid')) {
-      final String role = row['role']! as String;
-      // `profil` est la cle de lecture ; le role sert de repli pour un
-      // fichier ou la colonne existe mais n'est pas encore remplie.
-      final String brut = (row['profil'] as String?) ?? '';
-      final String code = brut.isEmpty ? (_codeDuRole(role) ?? role) : brut;
+    final List<Map<String, Object?>> lignesEquipements =
+        await db.query('equipements', orderBy: 'rowid');
+    if (lignesEquipements.isNotEmpty) _equipements.clear();
+    final Set<String> profilsServeur =
+        _profils.map((Profil profil) => profil.code).toSet();
+    for (final row in lignesEquipements) {
+      // `profil` est la cle de lecture ; les lignes legacy sans code de profil
+      // restent ignorées jusqu'au prochain snapshot serveur.
+      final String code = (row['profil'] as String?) ?? '';
+      if (!profilsServeur.contains(code)) continue;
       (_equipements[code] ??= <({String id, String nom})>[]).add(
         (id: row['id']! as String, nom: (row['nom'] as String?) ?? ''),
       );
@@ -601,25 +610,15 @@ class BaseLocale {
         ),
       );
 
-    _typesDT.clear();
-    for (final row in await db.query('types_dt', orderBy: 'rowid')) {
-      final String code = row['code']! as String;
-      final List<String> ids = (await db.query(
-        'ids_dt',
-        where: 'code_type = ?',
-        whereArgs: <Object?>[code],
-        orderBy: 'rowid',
-      ))
-          .map((r) => r['id']! as String)
-          .toList();
-      _typesDT.add(TypeDT(code: code, ids: ids));
-    }
-
     final List<Blast> relus = <Blast>[];
     for (final row in await db.query('blasts', orderBy: 'rowid')) {
+      // La base locale ne stocke qu'une carte par blast (ancienne
+      // representation). On enveloppe la valeur lue dans une liste d'une carte
+      // pour respecter le nouveau modele `Blast.cartes: List<String>`.
+      final String carte = row['carte']! as String;
       final Blast blast = Blast(
         numero: row['numero']! as String,
-        carte: row['carte']! as String,
+        cartes: <String>[carte],
         plan: row['plan']! as String,
         envoye: (row['envoye']! as int) != 0,
         blocs: <BlocTravail>[],
@@ -633,6 +632,7 @@ class BaseLocale {
       for (final rowBloc in rowsBlocs) {
         final BlocTravail bloc = BlocTravail(
           numero: rowBloc['numero']! as String,
+          carte: carte,
           verrouille: (rowBloc['verrouille']! as int) != 0,
         );
         final rowsLignes = await db.query(
@@ -668,6 +668,10 @@ class BaseLocale {
         horodatage: row['horodatage'] as String?,
       );
     }
+
+    // Notifications serveur : relues du disque, le curseur `meta` dit ou en
+    // est la lecture — les vieux messages ne sont jamais rejoues.
+    await _rechargerNotifications(db);
 
     final rowsJournal = await db.query('journal', orderBy: 'rowid DESC');
     journal
@@ -844,6 +848,97 @@ class BaseLocale {
     return premier;
   }
 
+  /// Remplace atomiquement les referentiels administres par le serveur.
+  ///
+  /// Un snapshot incomplet est refuse avant l'ecriture; les listes memoire ne
+  /// changent qu'apres la transaction SQLite.
+  Future<void> appliquerReferentiels(ReferentielsServeur snapshot) async {
+    if (snapshot.profils.isEmpty || snapshot.typesDT.isEmpty) {
+      throw const FormatException('Referentiels serveur incomplets');
+    }
+    final Set<String> codesProfils = <String>{
+      for (final Profil profil in snapshot.profils) profil.code,
+    };
+    final Set<String> codesTypes = <String>{
+      for (final TypeDT type in snapshot.typesDT) type.code,
+    };
+    final Set<String> equipementsUniques = <String>{
+      for (final EquipementServeur e in snapshot.equipements)
+        '${e.profil}\u0000${e.id}',
+    };
+    final List<String> identifiantsDT = <String>[
+      for (final TypeDT type in snapshot.typesDT) ...type.ids,
+    ];
+    final Set<String> identifiantsDTUniques = identifiantsDT.toSet();
+    final Set<String> equipementsActifs = <String>{
+      for (final EquipementServeur e in snapshot.equipements)
+        if (e.actif) e.profil,
+    };
+    if (codesProfils.length != snapshot.profils.length ||
+        codesTypes.length != snapshot.typesDT.length ||
+        snapshot.equipements.any((EquipementServeur e) =>
+            !codesProfils.contains(e.profil)) ||
+        equipementsUniques.length != snapshot.equipements.length ||
+        snapshot.typesDT.any((TypeDT type) => type.ids.isEmpty) ||
+        identifiantsDTUniques.length != identifiantsDT.length ||
+        snapshot.profils.any((Profil p) =>
+            p.actif && !equipementsActifs.contains(p.code))) {
+      throw const FormatException('Referentiels serveur incoherents');
+    }
+    final Database? db = _db;
+    if (db != null) {
+      await db.transaction((Transaction txn) async {
+        await txn.delete('profils');
+        await txn.delete('equipements');
+        await txn.delete('types_dt');
+        await txn.delete('ids_dt');
+        for (final Profil profil in snapshot.profils) {
+          await txn.insert('profils', _profilValeurs(profil));
+        }
+        for (final EquipementServeur equipement in snapshot.equipements) {
+          if (!equipement.actif) continue;
+          final Profil profil = snapshot.profils.firstWhere(
+            (Profil p) => p.code == equipement.profil,
+          );
+          await txn.insert('equipements', <String, Object?>{
+            'role': profil.roleCdc,
+            'profil': profil.code,
+            'id': equipement.id,
+            'nom': equipement.nom,
+          });
+        }
+        for (final TypeDT type in snapshot.typesDT) {
+          await txn.insert('types_dt', <String, Object?>{'code': type.code});
+          for (final String id in type.ids) {
+            await txn.insert('ids_dt', <String, Object?>{
+              'code_type': type.code,
+              'id': id,
+            });
+          }
+        }
+      });
+    }
+    _appliquerReferentielsMemoire(snapshot);
+    if (db != null) await _recharger(db);
+  }
+
+  void _appliquerReferentielsMemoire(ReferentielsServeur snapshot) {
+    _profils = List<Profil>.of(snapshot.profils);
+    _equipements
+      ..clear()
+      ..addEntries(
+        snapshot.profils.map((Profil p) => MapEntry(
+              p.code,
+              <({String id, String nom})>[
+                for (final EquipementServeur e in snapshot.equipements)
+                  if (e.profil == p.code && e.actif)
+                    (id: e.id, nom: e.nom),
+              ],
+            )),
+      );
+    _typesDT = List<TypeDT>.of(snapshot.typesDT);
+  }
+
   /// Identifiants enrroles pour un profil, lus dans `equipements`.
   List<String> idsDuProfil(Profil profil) =>
       List<String>.unmodifiable(_lot(profil.code).map((e) => e.id));
@@ -988,6 +1083,49 @@ class BaseLocale {
         'lat': position.wgs84!.lat,
         'lng': position.wgs84!.lng,
       },
+    });
+  }
+
+  /// Une position de la **perle** (godet), exprimee en coordonnees de bloc
+  /// (`Xbloc`, `Ybloc`, `Zbloc`) — profil excavator (§2.3).
+  ///
+  /// C'est la meme origine GNSS que `GPS_UPDATE`, mais projetee dans le
+  /// repere du bloc de travail. Cette position est envoyee au DT pendant la
+  /// session de connexion ; elle alimente aussi l'accumulateur de moyenne.
+  /// [dt] : le DT avec lequel la session est ouverte (ex. `TAB2-DT13`).
+  void evenementPositionPerle({
+    required int xbloc,
+    required int ybloc,
+    required int zbloc,
+    required String dt,
+  }) {
+    _evenement('POSITION_PERLE', <String, Object?>{
+      'xbloc': xbloc,
+      'ybloc': ybloc,
+      'zbloc': zbloc,
+      'dt': dt,
+    });
+  }
+
+  /// La **moyenne** des positions de la perle sur une session de connexion
+  /// (`Xmoy`, `Ymoy`, `Zmoy`) — profil excavator (§2.3).
+  ///
+  /// C'est cette moyenne qui sert au serveur a definir la Destination et la
+  /// Dumping Area. Elle est calculee en continu pendant la session, gelee et
+  /// envoyee a la sortie de zone du DT ("decollage"), puis remise a zero.
+  void evenementMoyennePerle({
+    required int xmoy,
+    required int ymoy,
+    required int zmoy,
+    required int nombre,
+    required String dt,
+  }) {
+    _evenement('MOYENNE_PERLE', <String, Object?>{
+      'xmoy': xmoy,
+      'ymoy': ymoy,
+      'zmoy': zmoy,
+      'nombre': nombre,
+      'dt': dt,
     });
   }
 
@@ -1352,7 +1490,7 @@ class BaseLocale {
     // pour les lignes de depart, qui n'ont jamais eu de LINE_ADD.
     _evenement('BLAST_SEND', <String, Object?>{
       'blast': blast.numero,
-      'carte': blast.carte,
+      'carte': blast.cartes.isNotEmpty ? blast.cartes.first : '',
       'mode': mode,
       'lignes': lignes,
       'blocs': cibles.length,
@@ -1365,7 +1503,8 @@ class BaseLocale {
     });
     return _accepter(
       'SEND blast ${blast.numero} mode $mode - $lignes ligne(s) '
-      '(${cibles.length} bloc(s), carte ${blast.carte})',
+      '(${cibles.length} bloc(s), '
+      'carte ${blast.cartes.isNotEmpty ? blast.cartes.first : '-'})',
     );
   }
 
@@ -1376,89 +1515,306 @@ class BaseLocale {
     return null;
   }
 
+  // ---------------------------------------------------------- reception serveur
+
+  /// Alimente la base avec la liste des blasts venue du serveur.
+  ///
+  /// C'est le sens **serveur -> app** de la synchro : les listes des menus
+  /// « Select blast » / « Select bloc » et les plans des cartes s'y remplis-
+  /// sent. Regles de reception :
+  /// - **upsert sur le numero** : un blast deja connu est mis a jour (blocs,
+  ///   carte), jamais duplique ;
+  /// - **les lignes et les verrous ne sont jamais touches** : ce que le
+  ///   spotter a saisi hors ligne appartient au poste, le serveur ne les
+  ///   porte pas ;
+  /// - **idempotent** : rappeler avec la meme liste ne change rien et ne
+  ///   journalise plus (comparaison d'empreinte, comme l'affectation) ;
+  /// - un blast sans numero ou sans carte est ignore : il repassera a la
+  ///   prochaine passe quand le serveur le completera.
+  ///
+  /// Rend le nombre de blasts reelslement ecrits (nouveaux, modifies, supprimes).
+  int recevoirBlasts(List<BlastServeur> liste) {
+    // La liste serveur fait foi : tout blast local qui n'y figure plus est
+    // considere obsolete (renomme, supprime, change de numero) et purge.
+    // Sinon le dropdown garde les anciens 119/120/121 et l'app diverge du
+    // sheet. Cote blocs/cartes : on aligne les enfants sur les parents
+    // conserves, jamais de perte de verrou ni de ligne sur un bloc reste.
+    final Set<String> numerosServeur = <String>{
+      for (final BlastServeur s in liste)
+        if (s.numero.isNotEmpty) s.numero,
+    };
+    final List<String> numerosObsoletes = <String>[
+      for (final Blast b in blasts)
+        if (!numerosServeur.contains(b.numero)) b.numero,
+    ];
+    // Log de diagnostic : la prochaine fois que l'utilisateur voit encore
+    // 119/120/121 apres une synchro, on saura immediatement si le serveur
+    // a envoye la nouvelle liste (et donc si la purge a bien eu lieu) ou
+    // si le probleme est en amont (reseau, token, deploiement serveur).
+    debugPrint(
+      'recevoirBlasts: serveur=${liste.length} blast(s) '
+      '[${liste.map((b) => b.numero).join(', ')}] '
+      'locaux=${blasts.length} obsoletes=${numerosObsoletes.length} '
+      '[${numerosObsoletes.join(', ')}]',
+    );
+    int ecrits = 0;
+    if (numerosObsoletes.isNotEmpty) {
+      for (final String numero in numerosObsoletes) {
+        blasts.removeWhere((b) => b.numero == numero);
+      }
+      _ecrire((Database db) async {
+        for (final String numero in numerosObsoletes) {
+          await db.delete('blocs', where: 'blast = ?', whereArgs: <Object?>[numero]);
+          await db.delete('blasts', where: 'numero = ?', whereArgs: <Object?>[numero]);
+        }
+      });
+      journaliser(
+        'PURGE blasts locaux absents du serveur : '
+        '${numerosObsoletes.join(', ')}',
+      );
+      ecrits += numerosObsoletes.length;
+    }
+
+    for (final BlastServeur serveur in liste) {
+      if (serveur.numero.isEmpty || serveur.carte.isEmpty) continue;
+      final Blast? existant = parNumero(serveur.numero);
+      if (existant != null) {
+        // Mise a jour : meme numero, on ne duplique pas. Un bloc venu du
+        // serveur s'ajoute seulement s'il manque deja (jamais de perte de
+        // verrou ni de lignes sur un bloc existant).
+        final String premiereCarte = serveur.cartes.isNotEmpty
+            ? serveur.cartes.first
+            : serveur.carte;
+        bool change = !(existant.cartes.length == 1 &&
+                existant.cartes.first == premiereCarte) ||
+            existant.plan != _planDe(serveur);
+        // On aligne la liste de cartes sur celle du serveur : un blast peut
+        // couvrir plusieurs RL (cartes), la reception serveur fait foi.
+        existant.cartes = <String>[premiereCarte];
+        existant.plan = _planDe(serveur);
+        for (final String numeroBloc in serveur.blocs) {
+          if (numeroBloc.isEmpty) continue;
+          if (existant.bloc(numeroBloc) == null) {
+            existant.blocs.add(
+              BlocTravail(numero: numeroBloc, carte: premiereCarte),
+            );
+            change = true;
+          }
+        }
+        if (!change) continue;
+        _ecrire((Database db) async {
+          await db.update(
+            'blasts',
+            <String, Object?>{
+              'carte': premiereCarte,
+              'plan': existant.plan,
+            },
+            where: 'numero = ?',
+            whereArgs: <Object?>[serveur.numero],
+          );
+          for (final BlocTravail bloc in existant.blocs) {
+            await _ecrireBlocSiAbsent(db, serveur.numero, bloc.numero);
+          }
+        });
+        journaliser(
+          'UPDATE blasts numero = ${serveur.numero} (serveur, '
+          '${existant.blocs.length} bloc(s), carte ${serveur.carte})',
+        );
+      } else {
+        // Nouveau blast : cree avec ses blocs, sans ligne et sans verrou.
+        final String premiereCarte = serveur.cartes.isNotEmpty
+            ? serveur.cartes.first
+            : serveur.carte;
+        final Blast blast = Blast(
+          numero: serveur.numero,
+          cartes: <String>[premiereCarte],
+          plan: _planDe(serveur),
+          blocs: <BlocTravail>[
+            for (final String numeroBloc in serveur.blocs)
+              if (numeroBloc.isNotEmpty)
+                BlocTravail(numero: numeroBloc, carte: premiereCarte),
+          ],
+        );
+        blasts.add(blast);
+        _ecrire((Database db) async {
+          await db.insert('blasts', <String, Object?>{
+            'numero': blast.numero,
+            'carte': premiereCarte,
+            'plan': blast.plan,
+            'envoye': 0,
+          });
+          for (final BlocTravail bloc in blast.blocs) {
+            await _ecrireBlocSiAbsent(db, blast.numero, bloc.numero);
+          }
+        });
+        journaliser(
+          'INSERT blasts numero = ${serveur.numero} (serveur, '
+          '${blast.blocs.length} bloc(s), carte ${serveur.carte})',
+        );
+      }
+      // Le libelle de la carte alimente la table `cartes` si le serveur en
+      // fournit un : la legende du plan ne depend plus du seed.
+      if (serveur.libelleCarte.isNotEmpty &&
+          libelleCarte(serveur.carte) != serveur.libelleCarte) {
+        _carteLabel[serveur.carte] = serveur.libelleCarte;
+        _ecrire(
+          (Database db) => db.insert(
+            'cartes',
+            <String, Object?>{
+              'code': serveur.carte,
+              'libelle': serveur.libelleCarte,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          ),
+        );
+      }
+      ecrits++;
+    }
+    return ecrits;
+  }
+
+  /// Chemin du plan pour un blast recu : l'URL serveur tant que le JPG
+  /// n'est pas telecharge, le chemin local ensuite (pose par le worker).
+  String _planDe(BlastServeur serveur) =>
+      _plansLocaux[serveur.carte] ?? serveur.planUrl;
+
+  /// Chemins locaux des plans deja telecharges, par code de carte.
+  final Map<String, String> _plansLocaux = <String, String>{};
+
+  /// Pose le chemin local d'un plan telecharge : les blasts de cette carte
+  /// lisent desormais le fichier au lieu de l'URL serveur.
+  void poserPlanLocal(String carte, String cheminFichier) {
+    _plansLocaux[carte] = cheminFichier;
+    for (final Blast blast in blasts) {
+      if (!blast.cartes.contains(carte)) continue;
+      blast.plan = cheminFichier;
+      _ecrire(
+        (Database db) => db.update(
+          'blasts',
+          <String, Object?>{'plan': cheminFichier},
+          where: 'carte = ?',
+          whereArgs: <Object?>[carte],
+        ),
+      );
+    }
+  }
+
+  /// Ecrit un bloc s'il n'existe pas encore sur le disque : l'upsert memoire
+  /// est reflechi sur le fichier sans jamais ecraser un bloc existant (ni
+  /// son verrou, ni ses lignes).
+  Future<void> _ecrireBlocSiAbsent(
+    Database db,
+    String numeroBlast,
+    String numeroBloc,
+  ) async {
+    if (await _idDuBloc(db, numeroBlast, numeroBloc) != null) return;
+    await db.insert('blocs', <String, Object?>{
+      'blast': numeroBlast,
+      'numero': numeroBloc,
+      'verrouille': 0,
+    });
+  }
+
   // ------------------------------------------------------------------ seeds
+
+  // ------------------------------------------------- notifications serveur
+
+  /// Curseur de lecture des notifications (dernier id recu), dans `meta` :
+  /// une reprise apres coupure ne repart jamais de zero et ne rejoue donc
+  /// pas les vieux messages.
+  int get derniereIdNotification => int.tryParse(meta('derniere_id_notif') ?? '') ?? 0;
+
+  /// Notifications recues du serveur, les plus recentes d'abord. Filtrees par
+  /// [codeProfil] : une notification a `profil = ''` s'adresse a tout le
+  /// monde, une notification ciblee ne sort que pour son profil.
+  List<NotificationServeur> notifications(String codeProfil) =>
+      _notifications
+          .where((NotificationServeur n) =>
+              n.profil.isEmpty || n.profil == codeProfil)
+          .toList(growable: false);
+
+  final List<NotificationServeur> _notifications = <NotificationServeur>[];
+
+  /// Ecrit les notifications servies par le serveur et rend le nombre de
+  /// nouveautes reelslement posees. Idempotent (cle = id serveur) : un
+  /// rejoue apres coupure ne duplique rien et ne remonte pas le curseur
+  /// au-dela de ce qui est reelslement en base.
+  int recevoirNotifications(List<NotificationServeur> liste) {
+    int ecrits = 0;
+    for (final NotificationServeur n in liste) {
+      if (n.id <= derniereIdNotification) continue;
+      if (_notifications.any((NotificationServeur a) => a.id == n.id)) continue;
+      _notifications.add(n);
+      ecrits++;
+      _ecrire(
+        (Database db) => db.insert(
+          'notifications',
+          <String, Object?>{
+            'id': n.id,
+            'profil': n.profil,
+            'message': n.message,
+            'horodatage': n.horodatage,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        ),
+      );
+    }
+    if (ecrits > 0) {
+      final int nouveau = liste.fold<int>(
+        derniereIdNotification,
+        (int max, NotificationServeur n) => n.id > max ? n.id : max,
+      );
+      _ecrire(
+        (Database db) => db.insert(
+          'meta',
+          <String, Object?>{'cle': 'derniere_id_notif', 'valeur': '$nouveau'},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        ),
+      );
+      // La memoire doit refletter le disque sans attendre la relecture.
+      _meta['derniere_id_notif'] = '$nouveau';
+    }
+    return ecrits;
+  }
+
+  /// Relit la table `notifications` du disque (appelle par [_recharger] au
+  /// demarrage : les messages recus hier sont encore la aujourd'hui).
+  Future<void> _rechargerNotifications(Database db) async {
+    _notifications
+      ..clear()
+      ..addAll(
+        (await db.query('notifications', orderBy: 'id'))
+            .map((row) => NotificationServeur(
+                  id: (row['id']! as num).toInt(),
+                  profil: (row['profil'] as String?) ?? '',
+                  message: row['message']! as String,
+                  horodatage: (row['horodatage'] as String?) ?? '',
+                ))
+            .toList(),
+      );
+  }
 
   /// Familles de DT, chacune avec son lot de numeros.
   ///
   /// Les identifiants sont non redondants sur tout le parc : le numero 01 n'a
   /// de place que dans la famille 1500. Le troisieme DT de chaque famille est
   /// celui que l'image source coupe en bas.
-  static List<TypeDT> _typesDTInit() => <TypeDT>[
-        const TypeDT(code: '1500', ids: <String>['01', '08', '14']),
-        const TypeDT(code: '785', ids: <String>['09', '10', '17']),
-        const TypeDT(code: '1000', ids: <String>['06', '04', '03']),
-        const TypeDT(code: '2500', ids: <String>['20', '25', '28']),
-      ];
-
-  static Map<String, String> _carteLabelsInit() => <String, String>{
-        'A1': 'Fosse A - niveau 1',
-        'A2': 'Fosse A - niveau 2',
-        'A3': 'Fosse A - niveau 3',
-        'B2': 'Fosse B - niveau 2',
-        'B3': 'Fosse B - niveau 3',
-        'C3': 'Rompad central',
-        'D1': 'Piste D - niveau 1',
-        'D2': 'Piste D - niveau 2',
-      };
+  ///
+  /// Vide en production : les libelles viennent du serveur (snapshot
+  /// `cartes.libelle` synchronise dans [_carteLabel]) et `libelleCarte(code)`
+  /// les lit prioritairement. Les tests utilisent [blastsDemo] pour disposer
+  /// de jeux de libelles/positions sans polluer la base reelle.
+  static Map<String, String> _carteLabelsInit() => <String, String>{};
 
   /// Points geographiques, en WGS84.
   ///
-  /// Tous les points sont sur un meme site (~ 700 m de cote a cote) pour que
-  /// la carte de suivi tienne en zoom 16 sans devoir recadrer.
+  /// Vide en production : les positions viennent du serveur (snapshot
+  /// `affectation` + referentiels) et atterrissent dans [_positions].
+  /// Les tests utilisent [blastsDemo] pour disposer de coordonnees stables.
   static Map<String, ({double lat, double lng})> _positionsInit() =>
-      <String, ({double lat, double lng})>{
-        codeDepart: (lat: 45.6720, lng: 3.1150),
-        'F5M': (lat: 45.6765, lng: 3.1210),
-        'RomPad 1': (lat: 45.6745, lng: 3.1085),
-      };
+      <String, ({double lat, double lng})>{};
 
-  /// Profils de depart (§2.3) : ce que la table `profils` porte au premier
-  /// lancement. Le code est la cle, le role vient du CDC, le reste est de
-  /// l'affichage — tout se relit depuis la base.
-  static List<Profil> _profilsInit() => <Profil>[
-        Profil(
-          code: 'dt',
-          libelle: 'Driving Truck - DT',
-          titre: 'DT',
-          roleCdc: roleTab2,
-          icone: 'local_shipping',
-          ordre: 1,
-        ),
-        Profil(
-          code: 'excavator',
-          libelle: 'Excavator',
-          titre: 'Excavator',
-          roleCdc: roleTab3,
-          icone: 'construction',
-          ordre: 2,
-        ),
-        Profil(
-          code: 'spotter',
-          libelle: 'Geology Spotter',
-          titre: 'Spotter',
-          roleCdc: roleTab1,
-          icone: 'explore',
-          ordre: 3,
-        ),
-      ];
-
-  /// Code de profil qui porte ce role CDC, dans le seed.
-  static String? _codeDuRole(String role) {
-    for (final Profil profil in _profilsInit()) {
-      if (profil.roleCdc == role) return profil.code;
-    }
-    return null;
-  }
-
-  /// Role CDC de ce code de profil, dans le seed.
-  static String? _roleDuCode(String code) {
-    for (final Profil profil in _profilsInit()) {
-      if (profil.code == code) return profil.roleCdc;
-    }
-    return null;
-  }
-
-  /// Ligne SQL d'un profil, dans les deux sens ([_semer] et les migrations).
+  /// Ligne SQL d'un profil reçue via le référentiel serveur.
   static Map<String, Object?> _profilValeurs(Profil profil) =>
       <String, Object?>{
         'code': profil.code,
@@ -1480,33 +1836,6 @@ class BaseLocale {
         actif: ((ligne['actif'] as num?)?.toInt() ?? 1) != 0,
       );
 
-  /// Enrolement de depart : un identifiant et son nom, tels que proposes au
-  /// login, profil par profil (REQ-002).
-  ///
-  /// Id et nom sont donnes ensemble ici, comme ils le seront sur une
-  /// inscription venue du serveur : aucun des deux menus n'est derive de
-  /// l'autre a l'ecran, ils lisent les deux colonnes de la meme ligne.
-  /// La cle du lot est le code du profil, la colonne `equipements.role`
-  /// porte le role CDC qui lui correspond.
-  static Map<String, List<({String id, String nom})>> _equipementsInit() =>
-      <String, List<({String id, String nom})>>{
-        'spotter': <({String id, String nom})>[
-          (id: '10', nom: 'Spotter 10'),
-          (id: '12', nom: 'Spotter 12'),
-          (id: '18', nom: 'Spotter 18'),
-        ],
-        'dt': <({String id, String nom})>[
-          (id: '10', nom: 'DT 10'),
-          (id: '14', nom: 'DT 14'),
-          (id: '15', nom: 'DT 15'),
-          (id: '22', nom: 'DT 22'),
-        ],
-        'excavator': <({String id, String nom})>[
-          (id: '7', nom: 'Excavator 7'),
-          (id: '22', nom: 'Excavator 22'),
-          (id: '31', nom: 'Excavator 31'),
-        ],
-      };
 
   /// Blasts de demonstration, **jamais semes en production** : le vrai
   /// travail du spotter arrive du serveur. Les tests les injectent avec
@@ -1514,13 +1843,14 @@ class BaseLocale {
   /// 119/120/121 (et de leurs lignes de depart) sans polluer les tablettes.
   @visibleForTesting
   static List<Blast> blastsDemo() => <Blast>[
-        Blast(
+        Blast.legacy(
           numero: '119',
           carte: 'A1',
           plan: 'assets/images/cartes/plans/119_A1.jpg',
           blocs: <BlocTravail>[
             BlocTravail(
               numero: '6',
+              carte: 'A1',
               lignes: <LigneBlast>[
                 LigneBlast(
                   time: '08h24',
@@ -1537,17 +1867,18 @@ class BaseLocale {
                 ),
               ],
             ),
-            BlocTravail(numero: '7'),
-            BlocTravail(numero: '8'),
+            BlocTravail(numero: '7', carte: 'A1'),
+            BlocTravail(numero: '8', carte: 'A1'),
           ],
         ),
-        Blast(
+        Blast.legacy(
           numero: '120',
           carte: 'B2',
           plan: 'assets/images/cartes/plans/120_B2.jpg',
           blocs: <BlocTravail>[
             BlocTravail(
               numero: '3',
+              carte: 'B2',
               lignes: <LigneBlast>[
                 LigneBlast(
                   time: '10h05',
@@ -1564,17 +1895,17 @@ class BaseLocale {
                 ),
               ],
             ),
-            BlocTravail(numero: '4'),
-            BlocTravail(numero: '5'),
+            BlocTravail(numero: '4', carte: 'B2'),
+            BlocTravail(numero: '5', carte: 'B2'),
           ],
         ),
-        Blast(
+        Blast.legacy(
           numero: '121',
           carte: 'D1',
           plan: 'assets/images/cartes/plans/121_D1.jpg',
           blocs: <BlocTravail>[
-            BlocTravail(numero: '1'),
-            BlocTravail(numero: '2'),
+            BlocTravail(numero: '1', carte: 'D1'),
+            BlocTravail(numero: '2', carte: 'D1'),
           ],
         ),
       ];

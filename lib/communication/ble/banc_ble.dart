@@ -25,15 +25,16 @@ class BancBle {
   final CoteGatewayBle coteGateway = CoteGatewayBle._();
   final CoteClientBle coteClient = CoteClientBle._();
 
-  /// Fait "entrer dans la zone" : le client devient detectable par TAB 2,
-  /// et TAB 2 devient detectable par le client (nom publicitaire ORE-TAB2).
-  void tab3Arrive({String nom = 'TAB3-001', int rssi = -55}) {
+  /// Fait "entrer dans la zone" : le client (DT) devient detectable par
+  /// l'emetteur, et l'emetteur (excavatrice) devient detectable par le client
+  /// (nom publicitaire ORE-EXC).
+  void tab3Arrive({String nom = 'TAB2-DT', int rssi = -55}) {
     coteGateway._appareilVisible
         .add(AppareilBle(id: nom, nom: nom, rssi: rssi));
-    // Ce que le client voit pendant son scan : le gateway.
+    // Ce que le client voit pendant son scan : l'emetteur (excavatrice).
     coteClient._gatewaysVisibles
       ..clear()
-      ..add(const AppareilBle(id: 'TAB2-001', nom: 'ORE-TAB2-001'));
+      ..add(const AppareilBle(id: 'EXC-001', nom: 'ORE-EXC-001'));
   }
 
   /// Fait "sortir" le client de la zone : plus detectable.

@@ -12,6 +12,10 @@ class AppColors {
   /// Etat intermediaire des badges (CDC §20) : couche demarree, en recherche.
   static const Color orange = Color(0xFFE8871E);
   static const Color border = Color(0xFFD1D3D4);
+  /// Texte secondaire des maquettes (details, hints, legendes).
+  static const Color greyText = Color(0xFF9A9DA1);
+  /// Fond des zones desactivees / rappel de contexte.
+  static const Color greyBg = Color(0xFFF3F4F5);
   static const Color darkSquare = Color(0xFF2E2E2E);
   static const Color ink = Color(0xFF1F2430);
   static const Color gold = Color(0xFFE8A200);

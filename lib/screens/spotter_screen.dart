@@ -1,14 +1,18 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
+import '../communication/permissions_photo.dart';
 import '../data/base_locale.dart';
 import '../models/models.dart';
 import '../state/session.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
 import '../widgets/profile_shell.dart';
+import 'spotter_relire.dart';
 
 /// Ecran du spotter geologique.
 ///
@@ -64,6 +68,9 @@ class _SpotterScreenState extends State<SpotterScreen> {
     if (blast == null || bloc == null || bloc.verrouille) return;
 
     final TextEditingController comment = TextEditingController();
+    // Message d'erreur du formulaire : affiche DANS le dialogue, jamais en
+    // fermant, sinon la photo prise et le commentaire tape seraient perdus.
+    String? erreur;
 
     // La photo n'est pas un drapeau : c'est un bouton qui ouvre l'appareil
     // photo et y depose les octets de l'image prise.
@@ -81,6 +88,27 @@ class _SpotterScreenState extends State<SpotterScreen> {
           final TypeDT? famille = session.base.typeDT(typeChoisi);
 
           Future<void> capturer(ImageSource source) async {
+            // Permissions runtime a chaud (point 4 du reste-a-faire) : la
+            // demande ne part qu'au tap sur la source choisie, pas a
+            // l'installation. Un refus est annonce, la saisie reste ouverte.
+            final bool autorise = source == ImageSource.camera
+                ? await PermissionsPhoto.camera()
+                : await PermissionsPhoto.galerie();
+            if (!autorise) {
+              if (!context.mounted) return;
+              final bool definitive = await PermissionsPhoto.refuseDefinitivement(
+                source == ImageSource.camera
+                    ? Permission.camera
+                    : Permission.photos,
+              );
+              if (!context.mounted) return;
+              session.push(
+                definitive
+                    ? 'Permission ${source == ImageSource.camera ? "camera" : "galerie"} refusee definitivement : accordez-la dans les reglages systeme'
+                    : 'Permission ${source == ImageSource.camera ? "camera" : "galerie"} refusee - la photo n\'a pas ete prise',
+              );
+              return;
+            }
             final ImagePicker picker = ImagePicker();
             XFile? capture;
             try {
@@ -150,7 +178,7 @@ class _SpotterScreenState extends State<SpotterScreen> {
                                 'Prendre une photo maintenant',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Color(0xFF9A9DA1),
+                                  color: AppColors.greyText,
                                 ),
                               ),
                             ],
@@ -187,7 +215,7 @@ class _SpotterScreenState extends State<SpotterScreen> {
                                     'du telephone',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Color(0xFF9A9DA1),
+                                  color: AppColors.greyText,
                                 ),
                               ),
                             ],
@@ -218,15 +246,15 @@ class _SpotterScreenState extends State<SpotterScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF3F4F5),
+                    color: AppColors.greyBg,
                     border: Border.all(color: AppColors.border),
                   ),
                   child: Text(
                     'Blast ${blast.numero}   Bloc ${bloc.numero}   '
                     'Carte ${blast.carte}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: kSerif,
-                      fontSize: 17,
+                      fontSize: (13 * MiseEnPage.depuis(context).k).clamp(10.0, 13.0),
                       color: AppColors.ink,
                     ),
                   ),
@@ -238,9 +266,9 @@ class _SpotterScreenState extends State<SpotterScreen> {
                 DropdownButtonFormField<String>(
                   initialValue: typeChoisi,
                   isExpanded: true,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: kSerif,
-                    fontSize: 16,
+                    fontSize: (14 * MiseEnPage.depuis(context).k).clamp(10.0, 14.0),
                     color: AppColors.ink,
                   ),
                   decoration: const InputDecoration(
@@ -284,15 +312,15 @@ class _SpotterScreenState extends State<SpotterScreen> {
                     famille == null
                         ? 'Aucun DT'
                         : 'Select dans ${famille.libelle}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: kSerif,
-                      fontSize: 16,
-                      color: Color(0xFF9A9DA1),
+                      fontSize: (13 * MiseEnPage.depuis(context).k).clamp(10.0, 13.0),
+                      color: AppColors.greyText,
                     ),
                   ),
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: kSerif,
-                    fontSize: 16,
+                    fontSize: (14 * MiseEnPage.depuis(context).k).clamp(10.0, 14.0),
                     color: AppColors.ink,
                   ),
                   decoration: const InputDecoration(
@@ -329,6 +357,13 @@ class _SpotterScreenState extends State<SpotterScreen> {
                   controller: comment,
                   decoration: const InputDecoration(labelText: 'Comment'),
                 ),
+                if (erreur != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    erreur!,
+                    style: TextStyle(color: AppColors.red, fontSize: (12 * MiseEnPage.depuis(context).k).clamp(9.0, 12.0)),
+                  ),
+                ],
               ],
             ),
           ),
@@ -344,11 +379,13 @@ class _SpotterScreenState extends State<SpotterScreen> {
               ),
               onPressed: () {
                 if (idDtChoisi == null) {
-                  Navigator.pop(context, false);
-                  session.push(
-                    'Choisissez un numero de DT dans le lot '
-                    '$typeChoisi avant d\'enregistrer',
-                  );
+                  // Le dialogue reste ouvert : la photo et le commentaire deja
+                  // saisis ne sont pas perdus, l'utilisateur complete la
+                  // selection et revalide.
+                  setStateDialog(() {
+                    erreur = 'Choisissez un numero de DT dans le lot '
+                        '$typeChoisi avant d\'enregistrer';
+                  });
                   return;
                 }
                 Navigator.pop(context, true);
@@ -445,7 +482,7 @@ class _SpotterScreenState extends State<SpotterScreen> {
           'du blast ${blast.numero} ?',
         ),
         content: Text(
-          '${bloc.nombreLignes} ligne(s) enregistreee(s) dans ce bloc.\n\n'
+          '${bloc.nombreLignes} ligne(s) enregistree(s) dans ce bloc.\n\n'
           'Aucune ligne ne pourra plus etre ajoutee dans ce bloc. Les autres '
           'blocs du blast restent ouverts, et vous pourrez toujours consulter '
           'les donnees et changer de bloc ou de blast.\n\n'
@@ -631,6 +668,8 @@ class _SpotterScreenState extends State<SpotterScreen> {
               child: _BlastOption(
                 numero: numero,
                 blast: session.base.parNumero(numero)!,
+                libelle: session.base
+                    .libelleCarte(session.base.parNumero(numero)!.carte),
                 actif: numero == _blast?.numero,
               ),
             ),
@@ -692,9 +731,9 @@ class _SpotterScreenState extends State<SpotterScreen> {
             children: [
               Text(
                 'Blast ${blast.numero} - $libelle',
-                style: const TextStyle(
+                style: TextStyle(
                   fontFamily: kSerif,
-                  fontSize: 15,
+                  fontSize: (13 * MiseEnPage.depuis(context).k).clamp(10.0, 13.0),
                   color: AppColors.slate,
                 ),
               ),
@@ -705,26 +744,12 @@ class _SpotterScreenState extends State<SpotterScreen> {
                 ),
                 // La carte est un plan taille : on peut la pincer pour lire un
                 // detail, la vignette du bouton ne le permet pas.
-                child: InteractiveViewer(
+                  child: InteractiveViewer(
                   maxScale: 6,
                   child: SizedBox(
                     width: largeur,
                     height: hauteur,
-                    child: Image.asset(
-                      blast.plan,
-                      fit: BoxFit.contain,
-                      gaplessPlayback: true,
-                      errorBuilder: (context, error, stack) => SizedBox(
-                        width: largeur,
-                        height: hauteur,
-                        child: const Center(
-                          child: Text(
-                            'Plan introuvable',
-                            style: TextStyle(color: AppColors.slate),
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: _ImagePlan(chemin: blast.plan),
                   ),
                 ),
               ),
@@ -770,7 +795,10 @@ class _SpotterScreenState extends State<SpotterScreen> {
                     final List<Widget> boutons = [
                       _FilterButton(
                         titre: 'Select blast',
-                        valeur: blast?.numero,
+                        valeur: blast == null
+                            ? null
+                            : (session.base.libelleCarte(blast.carte) ??
+                                blast.numero),
                         detail: blast == null
                             ? null
                             : '${blast.nombreBlocs} bloc(s)',
@@ -818,7 +846,7 @@ class _SpotterScreenState extends State<SpotterScreen> {
 
                     final List<Widget> ecarts = [
                       for (var i = 1; i < boutons.length; i++)
-                        SizedBox(width: 14 * mise.k),
+                        SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                     ];
 
                     if (contraintes.maxWidth < 700) {
@@ -827,17 +855,17 @@ class _SpotterScreenState extends State<SpotterScreen> {
                           Row(
                             children: [
                               Expanded(child: boutons[0]),
-                              SizedBox(width: 14 * mise.k),
+                              SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                               Expanded(child: boutons[1]),
                             ],
                           ),
-                          SizedBox(height: 14 * mise.k),
+                          SizedBox(height: (8 * mise.k).clamp(3.0, 8.0)),
                           Row(
                             children: [
                               Expanded(child: boutons[2]),
-                              SizedBox(width: 14 * mise.k),
+                              SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                               Expanded(child: boutons[3]),
-                              SizedBox(width: 14 * mise.k),
+                              SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                               Expanded(child: boutons[4]),
                             ],
                           ),
@@ -855,15 +883,18 @@ class _SpotterScreenState extends State<SpotterScreen> {
                     );
                   },
                 ),
-                SizedBox(height: 14 * mise.k),
+                SizedBox(height: (10 * mise.k).clamp(4.0, 10.0)),
                 Expanded(
                   child: Container(
                     decoration: BoxDecoration(
                       border: Border.all(color: AppColors.border, width: 1.5),
                     ),
                     child: Column(
-                      children: [
-                        const _TableHeader(),
+                    children: [
+                        SizedBox(
+                          height: MediaQuery.sizeOf(context).height < 400 ? 22 : 34,
+                          child: const _TableHeader(),
+                        ),
                         Expanded(
                           // Un bloc peut contenir une centaine de lignes :
                           // la liste doit defiler sous l'en-tete.
@@ -881,18 +912,77 @@ class _SpotterScreenState extends State<SpotterScreen> {
                                   ),
                                 ),
                         ),
-                        _AddStrip(
-                          onAdd: (blast == null ||
+                        SizedBox(
+                          height: MediaQuery.sizeOf(context).height < 400 ? 18 : 28,
+                          child: _AddStrip(
+                            onAdd: (blast == null ||
                                   bloc == null ||
                                   bloc.verrouille)
                               ? null
                               : _addRecord,
+                          ),
                         ),
                       ],
                     ),
                   ),
                 ),
                 SizedBox(height: 6 * mise.k),
+                // Relecture (rapport 14/10 §1.2) : photos, historique,
+                // compte-rendu de mission. Trois boutons d'acces aux
+                // panneaux de lecture de la base locale.
+                LayoutBuilder(
+                  builder: (context, contraintes) {
+                    final double hauteur = contraintes.maxHeight.isFinite
+                        ? contraintes.maxHeight
+                        : 48;
+                    final bool compact = hauteur < 60;
+                    final List<Widget> relire = [
+                      _BoutonRelire(
+                        icone: Icons.photo_library_outlined,
+                        libelle: 'Captures',
+                        compact: compact,
+                        onTap: () => ouvrirVisionneusePhotos(context, session),
+                      ),
+                      _BoutonRelire(
+                        icone: Icons.history,
+                        libelle: 'Historique',
+                        compact: compact,
+                        onTap: () => ouvrirHistorique(context, session),
+                      ),
+                      _BoutonRelire(
+                        icone: Icons.fact_check_outlined,
+                        libelle: 'Compte-rendu',
+                        compact: compact,
+                        onTap: () => ouvrirCompteRendu(context, session),
+                      ),
+                    ];
+                    if (contraintes.maxWidth < 700) {
+                      return Row(
+                        children: [
+                          for (var i = 0; i < relire.length; i++) ...[
+                            if (i > 0) SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
+                            Expanded(child: relire[i]),
+                          ],
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        for (int i = 0; i < relire.length; i++) ...[
+                          if (i > 0) SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
+                          Expanded(child: relire[i]),
+                        ],
+                      ],
+                    );
+                  },
+                ),
+                SizedBox(height: 6 * mise.k),
+                // Une seule ligne : ce texte se repliait sur deux lignes en
+                // fenetre basse (libelle long avec compteurs), ajoutant ~26 px
+                // a une colonne dont les autres blocs sont a hauteur fixe —
+                // d'ou le debordement de 26 px signale en paysage tablette.
+                // Il s'abrege desormais par ellipse au lieu de pousser le
+                // tableau (meme logique que `_TableHeader`).
                 Text(
                   blast == null && session.base.numerosBlast.isEmpty
                       ? 'Aucun blast - en attente du serveur'
@@ -902,9 +992,11 @@ class _SpotterScreenState extends State<SpotterScreen> {
                                   '${_lignes.length} ligne(s) affichee(s) sur '
                                   '$_lignesDuBlast pour le blast ${blast.numero}',
                   textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 15 * mise.k,
-                    color: const Color(0xFF9A9DA1),
+                    fontSize: (13 * mise.k).clamp(10.0, 13.0),
+                    color: AppColors.greyText,
                   ),
                 ),
               ],
@@ -916,15 +1008,60 @@ class _SpotterScreenState extends State<SpotterScreen> {
   }
 }
 
+/// Plan d'une carte, asset embarque ou fichier telecharge du serveur.
+///
+/// Un blast venu du serveur pointe d'abord sur l'URL du JPG, puis sur le
+/// fichier local pose par le worker de synchro. Un chemin hors `assets/`
+/// est donc un fichier disque : on le lit par `Image.file`, sinon par
+/// `Image.asset` comme avant.
+class _ImagePlan extends StatelessWidget {
+  const _ImagePlan({required this.chemin, this.fit = BoxFit.contain});
+
+  final String chemin;
+  final BoxFit fit;
+
+  bool get _estFichier => !chemin.startsWith('assets/');
+
+  @override
+  Widget build(BuildContext context) {
+    if (_estFichier) {
+      return Image.file(
+        File(chemin),
+        fit: fit,
+        gaplessPlayback: true,
+        errorBuilder: (context, error, stack) => const Center(
+          child: Text(
+            'Plan introuvable',
+            style: TextStyle(color: AppColors.slate),
+          ),
+        ),
+      );
+    }
+    return Image.asset(
+      chemin,
+      fit: fit,
+      gaplessPlayback: true,
+      errorBuilder: (context, error, stack) => const Center(
+        child: Text(
+          'Plan introuvable',
+          style: TextStyle(color: AppColors.slate),
+        ),
+      ),
+    );
+  }
+}
+
 class _BlastOption extends StatelessWidget {
   const _BlastOption({
     required this.numero,
     required this.blast,
+    required this.libelle,
     required this.actif,
   });
 
   final String numero;
   final Blast blast;
+  final String? libelle;
   final bool actif;
 
   @override
@@ -934,7 +1071,7 @@ class _BlastOption extends StatelessWidget {
       children: [
         Flexible(
           child: Text(
-            numero,
+            libelle ?? 'Blast $numero',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -950,7 +1087,10 @@ class _BlastOption extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             textAlign: TextAlign.right,
-            style: const TextStyle(fontSize: 13, color: AppColors.slate),
+            style: TextStyle(
+              fontSize: (12 * MiseEnPage.depuis(context).k).clamp(9.0, 12.0),
+              color: AppColors.slate,
+            ),
           ),
         ),
       ],
@@ -978,6 +1118,7 @@ class _BoutonPhoto extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool pris = photo != null;
+    final double k = MiseEnPage.depuis(context).k;
 
     return Material(
       color: pris ? const Color(0xFFF7F9F5) : Colors.white,
@@ -985,7 +1126,7 @@ class _BoutonPhoto extends StatelessWidget {
         onTap: onTap,
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          padding: EdgeInsets.symmetric(horizontal: 10 * k, vertical: 8 * k),
           decoration: BoxDecoration(
             border: Border.all(
               color: AppColors.border,
@@ -996,19 +1137,19 @@ class _BoutonPhoto extends StatelessWidget {
             children: [
               Icon(
                 Icons.photo_camera,
-                size: 26,
+                size: (22 * k).clamp(16.0, 22.0),
                 color: AppColors.green,
               ),
-              const SizedBox(width: 12),
+              SizedBox(width: 8 * k),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Picture',
                       style: TextStyle(
                         fontFamily: kSerif,
-                        fontSize: 16,
+                        fontSize: (14 * k).clamp(10.0, 14.0),
                         color: AppColors.ink,
                       ),
                     ),
@@ -1016,9 +1157,9 @@ class _BoutonPhoto extends StatelessWidget {
                       pris
                           ? 'Photo chargee - retoucher'
                           : 'Prendre une photo ou charger une image',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF9A9DA1),
+                      style: TextStyle(
+                        fontSize: (11 * k).clamp(9.0, 11.0),
+                        color: AppColors.greyText,
                       ),
                     ),
                   ],
@@ -1029,24 +1170,34 @@ class _BoutonPhoto extends StatelessWidget {
                   borderRadius: BorderRadius.circular(3),
                   child: Image.memory(
                     photo!,
-                    width: 66,
-                    height: 44,
+                    width: (56 * k).clamp(42.0, 56.0),
+                    height: (38 * k).clamp(28.0, 38.0),
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
                     errorBuilder: (context, error, stack) => Container(
-                      width: 66,
-                      height: 44,
-                      color: const Color(0xFFEFF0F1),
+                      width: (56 * k).clamp(42.0, 56.0),
+                      height: (38 * k).clamp(28.0, 38.0),
+                      color: AppColors.greyBg,
                       child: const Icon(Icons.broken_image, size: 18),
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                InkWell(
-                  onTap: onClear,
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.close, size: 20, color: AppColors.slate),
+                SizedBox(width: 4 * k),
+                SizedBox(
+                  width: (40 * k).clamp(36.0, 40.0),
+                  height: (40 * k).clamp(36.0, 40.0),
+                  child: InkWell(
+                    onTap: onClear,
+                    child: const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(
+                          Icons.close,
+                          size: 20,
+                          color: AppColors.slate,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ] else
@@ -1129,10 +1280,11 @@ class _Vide extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    final double k = MiseEnPage.depuis(context).k;
+    return Center(
       child: Text(
         'Aucune ligne sur ce bloc',
-        style: TextStyle(fontSize: 17, color: Color(0xFF9A9DA1)),
+        style: TextStyle(fontSize: (13 * k).clamp(10.0, 13.0), color: AppColors.greyText),
       ),
     );
   }
@@ -1160,7 +1312,9 @@ class _TableHeader extends StatelessWidget {
     // l'ecran.
     return Container(
       color: AppColors.bar,
-      constraints: const BoxConstraints(maxHeight: 46),
+      constraints: BoxConstraints(
+        maxHeight: (40 * MiseEnPage.depuis(context).k).clamp(28.0, 40.0),
+      ),
       height: double.infinity,
       child: Row(
         children: [
@@ -1178,10 +1332,10 @@ class _TableHeader extends StatelessWidget {
                       ),
                 child: Text(
                   _columns[i].spaced,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: kSerif,
-                    fontSize: 15,
-                    letterSpacing: 1,
+                    fontSize: (13 * MiseEnPage.depuis(context).k).clamp(10.0, 13.0),
+                    letterSpacing: 0.5,
                     color: Colors.white,
                   ),
                 ),
@@ -1223,7 +1377,7 @@ class _TableRow extends StatelessWidget {
     return SizedBox(
       // 44 px en reference, mais jamais plus que la place disponible : idem
       // l'en-tete, la ligne se comprime sur une fenetre basse.
-      height: 44,
+      height: (44 * MiseEnPage.depuis(context).k).clamp(28.0, 44.0),
       child: Row(
         children: [
           for (var i = 0; i < values.length; i++)
@@ -1252,9 +1406,13 @@ class _TableRow extends StatelessWidget {
                     : Text(
                         values[i],
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
+                        // La ligne garde sa hauteur fixe : un commentaire long
+                        // est elague au lieu de deborder de la cellule.
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
                           fontFamily: kSerif,
-                          fontSize: 17,
+                          fontSize: (13 * MiseEnPage.depuis(context).k).clamp(10.0, 13.0),
                           color: AppColors.ink,
                         ),
                       ),
@@ -1315,23 +1473,29 @@ class _AddStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: AppColors.tan,
-      constraints: const BoxConstraints(maxHeight: 40),
-      height: double.infinity,
-      child: Center(
-        child: InkWell(
-          onTap: onAdd,
+    // La strip entiere est cliquable : un carre de 34x26 est trop petit pour
+    // un doigt de chantier (48 dp recommandes), la bande pleine largeur
+    // l'autorise sans agrandir le dessin.
+    final double k = MiseEnPage.depuis(context).k;
+    return InkWell(
+      onTap: onAdd,
+      child: Container(
+        color: AppColors.tan,
+        constraints: BoxConstraints(
+          maxHeight: (36 * k).clamp(26.0, 36.0),
+        ),
+        height: double.infinity,
+        child: Center(
           child: Container(
-            width: 34,
-            height: 26,
+            width: (30 * k).clamp(24.0, 30.0),
+            height: (24 * k).clamp(20.0, 24.0),
             decoration: BoxDecoration(
               color: Colors.white,
               border: Border.all(color: AppColors.border),
             ),
             child: Icon(
               Icons.add,
-              size: 18,
+              size: (16 * k).clamp(12.0, 16.0),
               color: onAdd == null ? AppColors.border : AppColors.ink,
             ),
           ),
@@ -1388,7 +1552,7 @@ class _FilterButton extends StatelessWidget {
               apercu != null && contraintes.maxWidth >= 170;
 
           return Container(
-            height: 62,
+            height: (50 * MiseEnPage.depuis(context).k).clamp(38.0, 50.0),
             decoration: BoxDecoration(
               border: Border.all(color: AppColors.border, width: 1.5),
               color: Colors.white,
@@ -1399,16 +1563,10 @@ class _FilterButton extends StatelessWidget {
                 if (vignette) ...[
                   ClipRRect(
                     borderRadius: BorderRadius.circular(3),
-                    child: Image.asset(
-                      apercu!,
-                      width: 56,
-                      height: 40,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stack) => Container(
-                        width: 56,
-                        height: 40,
-                        color: const Color(0xFFEFF0F1),
-                      ),
+                    child: SizedBox(
+                      width: 48,
+                      height: 34,
+                      child: _ImagePlan(chemin: apercu!, fit: BoxFit.cover),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1422,10 +1580,10 @@ class _FilterButton extends StatelessWidget {
                         titre,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: kSerif,
-                          fontSize: 13,
-                          letterSpacing: 1,
+                          fontSize: (12 * MiseEnPage.depuis(context).k).clamp(9.0, 12.0),
+                          letterSpacing: 0.5,
                           color: AppColors.slate,
                         ),
                       ),
@@ -1434,9 +1592,9 @@ class _FilterButton extends StatelessWidget {
                           valeur!,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontFamily: kSerif,
-                            fontSize: 19,
+                            fontSize: (15 * MiseEnPage.depuis(context).k).clamp(11.0, 15.0),
                             color: AppColors.ink,
                           ),
                         ),
@@ -1449,10 +1607,10 @@ class _FilterButton extends StatelessWidget {
                       detail!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: kSerif,
-                        fontSize: 12,
-                        color: Color(0xFF9A9DA1),
+                        fontSize: (11 * MiseEnPage.depuis(context).k).clamp(9.0, 11.0),
+                        color: AppColors.greyText,
                       ),
                     ),
                   ),
@@ -1508,16 +1666,16 @@ class _SendButton extends StatelessWidget {
         ? AppColors.green
         : actif
             ? AppColors.ink
-            : const Color(0xFF9A9DA1);
+            : AppColors.greyText;
 
     // Comme les filtres : la largeur vient du rang, pas d'ici.
     return InkWell(
       onTap: onTap,
       child: Container(
-        height: 56,
+        height: (50 * MiseEnPage.depuis(context).k).clamp(38.0, 50.0),
         decoration: BoxDecoration(
           border: Border.all(color: AppColors.border, width: 1.5),
-          color: actif ? Colors.white : const Color(0xFFF3F4F5),
+          color: actif ? Colors.white : AppColors.greyBg,
         ),
         padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
@@ -1533,8 +1691,8 @@ class _SendButton extends StatelessWidget {
                     (envoye ? 'Envoye' : 'Envoyer').spaced,
                     style: TextStyle(
                       fontFamily: kSerif,
-                      fontSize: 19,
-                      letterSpacing: 4,
+                      fontSize: (15 * MiseEnPage.depuis(context).k).clamp(11.0, 15.0),
+                      letterSpacing: 3,
                       color: encre,
                     ),
                   ),
@@ -1572,7 +1730,7 @@ class _LockButton extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
-        height: 56,
+        height: (50 * MiseEnPage.depuis(context).k).clamp(38.0, 50.0),
         decoration: BoxDecoration(
           border: Border.all(color: AppColors.border, width: 1.5),
           color: verrouille ? AppColors.slate : Colors.white,
@@ -1588,8 +1746,8 @@ class _LockButton extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontFamily: kSerif,
-                    fontSize: 19,
-                    letterSpacing: 4,
+                    fontSize: (15 * MiseEnPage.depuis(context).k).clamp(11.0, 15.0),
+                    letterSpacing: 3,
                     color: verrouille ? Colors.white : AppColors.ink,
                   ),
                 ),
@@ -1600,6 +1758,58 @@ class _LockButton extends StatelessWidget {
               size: 24,
               color: verrouille ? Colors.white : AppColors.ink,
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bouton de relecture (Captures / Historique / Compte-rendu) : style des
+/// autres blocs d'action de l'ecran (bordure 1.5 px, serif), hauteur plus
+/// faible — ce sont des acces secondaires, pas des boutons de saisie.
+class _BoutonRelire extends StatelessWidget {
+  const _BoutonRelire({
+    required this.icone,
+    required this.libelle,
+    required this.onTap,
+    required this.compact,
+  });
+
+  final IconData icone;
+  final String libelle;
+  final VoidCallback onTap;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final double k = MiseEnPage.depuis(context).k;
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+                        height: compact ? 30 : 40,
+                        decoration: BoxDecoration(
+          border: Border.all(color: AppColors.border, width: 1.5),
+          color: Colors.white,
+        ),
+        padding: EdgeInsets.symmetric(horizontal: 12 * k),
+        child: Row(
+          children: [
+            Icon(icone, size: 20 * k, color: AppColors.slate),
+            SizedBox(width: 10 * k),
+            Expanded(
+              child: Text(
+                libelle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: kSerif,
+                  fontSize: (13 * k).clamp(10.0, 13.0),
+                  color: AppColors.ink,
+                ),
+              ),
+            ),
+            Icon(Icons.chevron_right, size: 20 * k, color: AppColors.border),
           ],
         ),
       ),

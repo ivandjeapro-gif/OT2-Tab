@@ -70,6 +70,11 @@ dependencies:
   vibration: ^3.1.8
   audioplayers: ^6.7.1
   flutter_screenutil: ^5.9.3
+  path_provider: ^2.1.5
+  # Demande des permissions runtime (BLE scan/connect/advertise, API 31+).
+  # Sans cet appel, l'advertising et le scan echouent silencieusement sur
+  # Android 12+ meme si le manifeste les declare : elles sont runtime.
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

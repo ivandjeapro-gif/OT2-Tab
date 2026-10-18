@@ -125,7 +125,7 @@ X-Protocol-Version: 1.0
 | `destination` | string (code) | Destination chargée, choisie **et validée** par le serveur. |
 | `dumping_area` | string (libellé) | Dumping area à rejoindre. |
 | `mission` | string | Identifiant de la mission en cours. |
-| `parcours` | JSON `[[easting, northing], …]` en **UTM mètres**, ≥ 2 points | Trajet prévu vers la dumping area. La tablette mesure l'écart de sa position GPS à cette polyline (détection locale). |
+| `parcours` | JSON `[[easting, northing], …]` en **UTM mètres**, ≥ 2 points | Trajet prévu vers la dumping area. **C'est aussi la liste des waypoints** : `P[0]` = départ, `P[n-1]` = dumping area, les points intermédiaires sont les waypoints de passage. La tablette en tire deux usages locaux : détection d'écart (§4.4) et **calcul de progression** (§4.6) pour la carte et la barre de trajet de l'écran DT. |
 | `alerte` | texte libre, vide = rien | Repli « option A » : message affiché tel quel par la tablette (geofences côté serveur). |
 | *(autres clés)* | chaînes | Passées telles quelles ; la tablette n'affiche que ce qu'elle connaît. |
 
@@ -175,6 +175,37 @@ parcours = json.dumps([[int(e), int(n)] for (e, n) in points])   # UTM mètres
 - UTM : même fuseau sur tout le site ; les positions GPS des tablettes sont
   déjà converties en `easting`/`northing` (mètres).
 
+### 4.6 Calcul de progression côté tablette (barre de trajet + carte)
+
+La progression du DT **n'est pas calculée par le serveur** : une fois la
+polyline reçue, le temps réel est 100 % local (la tablette roule hors 4G).
+Le serveur doit simplement garantir que `parcours` est renvoyé à chaque passe
+(§4.4, règle 1). Côté tablette, à chaque mesure GNSS :
+
+1. **Projection** de la position (easting/northing) sur chaque segment
+   `[P[i], P[i+1]]` de la polyline → distance au segment + position projetée.
+2. **Progression** = (longueurs cumulées des segments entièrement franchis
+   + distance le long du segment courant) / longueur totale de la polyline.
+3. **Anti-retour** : la progression ne décroît jamais (demi-tour, bruit GPS) —
+   la tablette garde le maximum atteint sur l'affectation courante.
+4. **Waypoint courant** = premier sommet non franchi : il est affiché sur la
+   barre de trajet de l'écran DT (à sa fraction de la longueur totale) et le
+   DT se positionne sur la carte **au point projeté**, jamais interpolé.
+5. La polyline sert trois usages cohérents sur la même donnée : carte
+   (superposée aux tuiles OpenStreetMap, en WGS84 converti), barre de
+   progression, détection d'écart (§4.4).
+
+Exigences de cohérence pour le serveur :
+
+- **Départ de la polyline = point de départ du DT** (`positions` « DEPART »
+  de la table locale) : c'est P[0] que la barre et la carte placent sur leur
+  borne de gauche.
+- **Fin = dumping area** : P[n-1] doit coïncider avec la position connue de
+  la `dumping_area`, sinon la borne de droite et le drapeau divergent.
+- **Même fuseau UTM** sur toute la polyline (le site est dans une zone).
+- Un changement d'affectation (nouveau `parcours`) **réinitialise** la
+  progression : la barre repart de zéro sur le nouveau trajet.
+
 ## 5. Recommandations de conception serveur
 
 - Table `evenements` : `event_id` **PRIMARY KEY**, index sur
@@ -206,5 +237,11 @@ Réponse : tableau d'ACK par `event_id`. La version 1.0 du client envoie un
 - [ ] `GET /affectation` sans mission → `404` (et pas `200` vide).
 - [ ] `200` avec `parcours` valide → la tablette affiche la destination, et
       l'écart se déclenche au-delà de 40 m pendant 15 s.
+- [ ] `200` avec `parcours` valide → la barre de trajet et le marqueur DT de
+      la carte suivent la progression GNSS réelle (projection sur la polyline,
+      §4.6), et le waypoint courant est visible sur la barre.
+- [ ] `parcours` renvoyé à chaque passe (§4.4) : une coupure de 4G pendant
+      un changement de dumping area ne laisse pas la tablette avec l'ancien
+      trajet.
 - [ ] Réponse lente (>15 s) → la tablette ne perd rien (l'événement reste en
       file, la destination conservée).

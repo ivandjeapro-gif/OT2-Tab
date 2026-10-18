@@ -134,6 +134,9 @@ class WifiGateway {
       case WifiProtocole.typeEvenement:
         surEvenement?.call(id, message);
         break;
+      case WifiProtocole.typeNotification:
+        surNotification?.call(message);
+        break;
       case WifiProtocole.typePing:
         _liens[id]?.envoyer(
             WifiProtocole.encoder(WifiProtocole.pong(idGateway)));
@@ -145,6 +148,23 @@ class WifiGateway {
 
   /// Branche la réception des événements métier du TAB 1 (CDC §10/§11).
   void Function(String source, Map<String, Object?> evenement)? surEvenement;
+
+  /// Notification serveur recue sur ce lien (Boss -> DT -> spotter) : le
+  /// client la relaie a la couche au-dessus, qui la stocke et l'affiche.
+  void Function(Map<String, Object?> notification)? surNotification;
+
+  /// Diffuse une notification a TOUS les clients authentifies (le DT relaie
+  /// le canal serveur vers les spotters presents dans son rayon).
+  Future<void> diffuserNotification(Map<String, Object?> notification) async {
+    for (final LienWifi lien in _liens.values) {
+      try {
+        await lien.envoyer(WifiProtocole.encoder(notification));
+      } catch (_) {
+        // Lien parti : la notification suivante repassera, le client
+        // rattrapera aussi par le curseur HTTP a sa prochaine synchro.
+      }
+    }
+  }
 
   /// Envoie un ACK à l'appareil source (idempotence CDC §17).
   Future<void> acquitter(String source, String eventId) async {
@@ -184,7 +204,8 @@ class WifiGateway {
 /// Client Wi-Fi : côté TAB 1 (CDC §6, REQ-008).
 ///
 /// Responsabilités :
-/// - trouver le point d'accès ORE-TAB2, s'y associer, passer le handshake ;
+/// - trouver le point d'accès ORE-EXC (excavatrice), s'y associer, passer le
+///   handshake ;
 /// - envoyer ses événements et attendre l'ACK, garder en file sinon (§16.1) ;
 /// - se reconnecter automatiquement en cas de coupure (REQ-008).
 class WifiClient {
@@ -222,6 +243,11 @@ class WifiClient {
   /// Evenements acquittés par TAB 2 : la couche au-dessus purge la file.
   void Function(String eventId)? surAck;
 
+  /// Notification serveur recue sur le lien local (Boss -> DT -> spotter) :
+  /// meme canal que la descente HTTP, mais instantane quand le DT est a
+  /// portee. La couche au-dessus la stocke en base et l'affiche.
+  void Function(Map<String, Object?> notification)? surNotification;
+
   /// Lien redevenu opérationnel après une reconnexion (REQ-008) : le
   /// propriétaire (session) retransmet sa file PENDING à ce moment.
   VoidCallback? surReconnexion;
@@ -232,7 +258,7 @@ class WifiClient {
     if (_arrete) return false;
     ReseauWifi? cible;
     await for (final ReseauWifi r in transport.scanner()) {
-      if (r.ssid.startsWith('ORE-TAB2')) {
+      if (r.ssid.startsWith('ORE-EXC')) {
         cible = r;
         break;
       }
@@ -347,6 +373,11 @@ class WifiClient {
       fileAttente.removeWhere((e) => e['event_id'] == id);
       surAck?.call(id);
       _journal.ligne('Wi-Fi ACK recu pour $id');
+    } else if (m['type'] == WifiProtocole.typeNotification) {
+      // Boss -> serveur -> DT -> ici : la notification arrive par le lien
+      // local, la couche au-dessus la stocke et l'affiche (bandeau rouge).
+      surNotification?.call(m);
+      _journal.ligne('Wi-Fi notification recue #${m['id']}');
     }
   }
 
