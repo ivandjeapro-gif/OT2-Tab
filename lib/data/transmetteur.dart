@@ -126,6 +126,8 @@ class BlastServeur {
     required this.carte,
     required this.blocs,
     this.cartes = const <String>[],
+    this.blocsParCarte = const <String, List<String>>{},
+    this.flitchParCarte = const <String, String>{},
     this.libelleCarte = '',
     this.planUrl = '',
   });
@@ -142,6 +144,18 @@ class BlastServeur {
   /// Liste des cartes couvertes par le blast (une par RL). Vide si le serveur
   /// n'envoie que l'ancien champ `carte`, auquel cas [carte] fait foi.
   final List<String> cartes;
+
+  /// Blocs rattaches a leur carte (RL) : carte -> numeros de blocs.
+  ///
+  /// Vide si le serveur ne fournit que la liste plate `blocs` (ancien
+  /// contrat) : le client retombe alors sur [blocs] applique a la premiere
+  /// carte.
+  final Map<String, List<String>> blocsParCarte;
+
+  /// RL (flitch) declare par le serveur pour chaque carte, quand il le
+  /// fournit. Sert de repli lorsque le code de carte n'est pas decodable :
+  /// le client ne perd alors pas le rattachement RL.
+  final Map<String, String> flitchParCarte;
 
   /// Libelle lisible de la carte (« Fosse A - niveau 1 »), pose dans la
   /// table `cartes` a la reception.
@@ -175,6 +189,8 @@ class BlastServeur {
               if (item['cartes'] is List)
                 for (final Object? c in item['cartes'] as List) '$c',
             ],
+            blocsParCarte: _lireBlocsParCarte(item['blocs_par_carte']),
+            flitchParCarte: _lireFlitchParCarte(item['blocs_par_carte']),
             libelleCarte: '${item['libelle_carte'] ?? ''}',
             blocs: <String>[
               if (item['blocs'] is List)
@@ -183,6 +199,38 @@ class BlastServeur {
             planUrl: '${item['plan_url'] ?? ''}',
           ),
     ];
+  }
+
+  /// Lit `blocs_par_carte` : `[{carte: '...', blocs: ['1','2']}, ...]`.
+  static Map<String, List<String>> _lireBlocsParCarte(Object? brut) {
+    if (brut is! List) return const <String, List<String>>{};
+    final Map<String, List<String>> sortie = <String, List<String>>{};
+    for (final Object? item in brut) {
+      if (item is! Map<String, Object?>) continue;
+      final String carte = '${item['carte'] ?? ''}'.trim();
+      if (carte.isEmpty) continue;
+      final Object? blocs = item['blocs'];
+      if (blocs is! List) continue;
+      sortie[carte] = <String>[
+        for (final Object? b in blocs)
+          if ('$b'.trim().isNotEmpty) '$b'.trim(),
+      ];
+    }
+    return sortie;
+  }
+
+  /// Lit le `flitch` declare par le serveur pour chaque carte.
+  static Map<String, String> _lireFlitchParCarte(Object? brut) {
+    if (brut is! List) return const <String, String>{};
+    final Map<String, String> sortie = <String, String>{};
+    for (final Object? item in brut) {
+      if (item is! Map<String, Object?>) continue;
+      final String carte = '${item['carte'] ?? ''}'.trim();
+      final String flitch = '${item['flitch'] ?? ''}'.trim();
+      if (carte.isEmpty || flitch.isEmpty) continue;
+      sortie[carte] = flitch;
+    }
+    return sortie;
   }
 }
 
@@ -439,7 +487,7 @@ class TransmetteurHttp implements Transmetteur {
   TransmetteurHttp({
     required String? Function(String cle) meta,
     http.Client? client,
-    this.delai = const Duration(seconds: 15),
+    this.delai = const Duration(seconds: 45),
   })  : _meta = meta,
         _client = client ?? http.Client();
 

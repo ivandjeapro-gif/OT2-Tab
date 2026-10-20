@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -50,6 +52,7 @@ class _ParametresScreenState extends State<ParametresScreen> {
   // api_base/api_token TAPES (pas encore enregistres), appelle `?action=sante`
   // et affiche le resultat en vert/rouge sous le bouton.
   Future<void> _testerServeur() async {
+    setState(() => _diagnosticServeur = 'Test en cours...');
     final TransmetteurHttp test = TransmetteurHttp(
       meta: (String cle) => switch (cle) {
         'api_base' => _apiBase.text.trim().replaceFirst(RegExp(r'/+$'), ''),
@@ -137,6 +140,9 @@ class _ParametresScreenState extends State<ParametresScreen> {
     // Seuils + GPS appliques en direct (api_* et envoi_mode sont relus a
     // chaque envoi, ils n'ont pas besoin d'etre recharge).
     final bool seuilsOk = session.rechargerParametres();
+    // Télécharge les référentiels avec la nouvelle configuration
+    // ignore: unawaited_futures
+    session.synchro.unePasseReferentiels(forcer: true);
     if (!mounted) return;
     setState(() => _erreur = null);
     session.push(

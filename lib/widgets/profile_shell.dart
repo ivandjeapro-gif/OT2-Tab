@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../screens/login_screen.dart';
 import '../state/session.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
@@ -16,14 +17,52 @@ class ProfileShell extends StatelessWidget {
   final Session session;
   final Widget body;
 
+  Future<void> _confirmerSortie(BuildContext context) async {
+    final bool? quitter = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Quitter la session ?'),
+        content: Text(
+          session.profile != null
+              ? 'Voulez-vous fermer la session de ${session.profile!.libelle} (${session.deviceName}) et revenir a l\'ecran de connexion ?'
+              : 'Voulez-vous vous deconnecter et revenir a l\'ecran de connexion ?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.slate,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Deconnecter'),
+          ),
+        ],
+      ),
+    );
+
+    if (quitter == true && context.mounted) {
+      session.disconnect();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => LoginScreen(session: session),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.paper,
       body: SafeArea(
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const AppHeader(),
+            AppHeader(onExit: () => _confirmerSortie(context)),
             Expanded(child: body),
             Row(
               children: [

@@ -91,12 +91,20 @@ class CarteSuivi extends StatelessWidget {
 
     // L'attribution vit hors de la carte, en overlay : celle de flutter_map
     // n'est pas elargie par la fenetre et deborde des que la carte retrecit.
+    // Le cadrage initial ne s'applique qu'a la creation de la FlutterMap :
+    // on la recre (meme destination, meme zoom) quand les donnees deviennent
+    // disponibles — arrivée de la position du DT, puis du trace parcouru —
+    // sinon la carte reste cadree sur ses seuls premiers points (parcours
+    // invisible). Une fois ces donnees la, la cle ne change plus et le
+    // deplacement/zoom manuel de l'utilisateur est preserve.
+    final String cleCadrage = 'carte-'
+        '$destination-${position != null}-$traceVerte-$traceComplet.length';
     return ClipRRect(
       child: Stack(
         fit: StackFit.passthrough,
         children: [
           FlutterMap(
-            key: ValueKey<String>('carte-$destination'),
+            key: ValueKey<String>(cleCadrage),
             options: MapOptions(
               initialCameraFit: CameraFit.bounds(
                 bounds: LatLngBounds.fromPoints(points),

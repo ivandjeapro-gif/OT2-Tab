@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -76,6 +76,24 @@ class BaseLocale {
   static const String roleTab1 = 'ROLE_TAB1';
   static const String roleTab2 = 'ROLE_TAB2';
   static const String roleTab3 = 'ROLE_TAB3';
+
+  /// Vrai si [role] designe le Spotter (ROLE_TAB1, SPOT ou SPOTTER).
+  static bool estTab1(String role) {
+    final String r = role.toUpperCase();
+    return r == roleTab1 || r == 'SPOT' || r == 'SPOTTER';
+  }
+
+  /// Vrai si [role] designe le chauffeur DT (ROLE_TAB2 ou DT).
+  static bool estTab2(String role) {
+    final String r = role.toUpperCase();
+    return r == roleTab2 || r == 'DT';
+  }
+
+  /// Vrai si [role] designe l'excavatrice (ROLE_TAB3, EXCAVATOR ou EXCAVATRICE).
+  static bool estTab3(String role) {
+    final String r = role.toUpperCase();
+    return r == roleTab3 || r == 'EXCAVATOR' || r == 'EXCAVATRICE';
+  }
 
   /// Versions visibles par l'application, ecrites dans `meta` a la creation.
   static const Map<String, String> versions = <String, String>{
@@ -198,6 +216,31 @@ class BaseLocale {
         onUpgrade: _versionner,
       );
       _db = db;
+      // Migration legere : la colonne `carte` sur `blocs` a ete ajoutee apres
+      // coup. Sur une base deja creee, ALTER TABLE est idempotent (échec
+      // silencieux si la colonne existe).
+      try {
+        await db.execute(
+          "ALTER TABLE blocs ADD COLUMN carte TEXT NOT NULL DEFAULT '';",
+        );
+      } catch (_) {}
+      // Les blocs herites n'ont pas de carte : ils pointeraient tous sur un RL
+      // vide. On les purge ; la prochaine synchro serveur les recree avec leur
+      // RL exact (blocs_par_carte). Les lignes deja saisies sont conservees
+      // par la synchro : seul le rattachement RL est refait.
+      final int orphelins = Sqflite.firstIntValue(
+            await db.rawQuery(
+              "SELECT COUNT(*) FROM blocs WHERE carte IS NULL OR carte = ''",
+            ),
+          ) ??
+          0;
+      if (orphelins > 0) {
+        await db.delete(
+          'blocs',
+          where: "carte IS NULL OR carte = ''",
+        );
+        debugPrint('Migration blocs : $orphelins bloc(s) sans RL supprime(s)');
+      }
       await _recharger(db);
     } catch (e) {
       _db = null;
@@ -268,13 +311,16 @@ class BaseLocale {
       )
     ''');
     // v6 : le verrou vit sur la paire (blast, bloc), pas sur le blast entier.
+    // Un meme numero de bloc peut exister sur deux RL (cartes) differentes du
+    // meme blast : la cle d'unicite inclut donc la carte.
     await db.execute('''
       CREATE TABLE blocs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         blast TEXT NOT NULL,
         numero TEXT NOT NULL,
+        carte TEXT NOT NULL DEFAULT '',
         verrouille INTEGER NOT NULL DEFAULT 0,
-        UNIQUE (blast, numero)
+        UNIQUE (blast, numero, carte)
       )
     ''');
     await db.execute('''
@@ -612,13 +658,19 @@ class BaseLocale {
 
     final List<Blast> relus = <Blast>[];
     for (final row in await db.query('blasts', orderBy: 'rowid')) {
-      // La base locale ne stocke qu'une carte par blast (ancienne
-      // representation). On enveloppe la valeur lue dans une liste d'une carte
-      // pour respecter le nouveau modele `Blast.cartes: List<String>`.
-      final String carte = row['carte']! as String;
+      final String carteBrut = row['carte']! as String;
+      final List<String> cartes = carteBrut.contains(',')
+          ? carteBrut
+              .split(',')
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)
+              .toList(growable: true)
+          : <String>[carteBrut];
+      final String premiereCarte =
+          cartes.isNotEmpty ? cartes.first : carteBrut;
       final Blast blast = Blast(
         numero: row['numero']! as String,
-        cartes: <String>[carte],
+        cartes: cartes,
         plan: row['plan']! as String,
         envoye: (row['envoye']! as int) != 0,
         blocs: <BlocTravail>[],
@@ -630,9 +682,13 @@ class BaseLocale {
         orderBy: 'rowid',
       );
       for (final rowBloc in rowsBlocs) {
+        final String carteBloc =
+            ((rowBloc['carte'] as String?) ?? '').trim();
         final BlocTravail bloc = BlocTravail(
           numero: rowBloc['numero']! as String,
-          carte: carte,
+          // Le bloc se souvient de SA carte (son RL) ; les anciens blocs sans
+          // carte retombent sur la premiere carte du blast.
+          carte: carteBloc.isNotEmpty ? carteBloc : premiereCarte,
           verrouille: (rowBloc['verrouille']! as int) != 0,
         );
         final rowsLignes = await db.query(
@@ -713,12 +769,22 @@ class BaseLocale {
         );
   }
 
-  Future<int?> _idDuBloc(Database db, String blast, String numero) async {
+  Future<int?> _idDuBloc(
+    Database db,
+    String blast,
+    String numero, {
+    String? carte,
+  }) async {
+    final bool parCarte = carte != null && carte.isNotEmpty;
     final rows = await db.query(
       'blocs',
       columns: <String>['id'],
-      where: 'blast = ? AND numero = ?',
-      whereArgs: <Object?>[blast, numero],
+      where: parCarte
+          ? 'blast = ? AND numero = ? AND carte = ?'
+          : 'blast = ? AND numero = ?',
+      whereArgs: parCarte
+          ? <Object?>[blast, numero, carte]
+          : <Object?>[blast, numero],
       limit: 1,
     );
     if (rows.isEmpty) return null;
@@ -970,6 +1036,14 @@ class BaseLocale {
   String? nomDuProfil(Profil profil, String id) {
     for (final ({String id, String nom}) e in _lot(profil.code)) {
       if (e.id == id) return e.nom;
+    }
+    return null;
+  }
+
+  /// Identifiant de l'equipement correspondant au [nom] donne pour ce profil.
+  String? idDuProfil(Profil profil, String nom) {
+    for (final ({String id, String nom}) e in _lot(profil.code)) {
+      if (e.nom == nom) return e.id;
     }
     return null;
   }
@@ -1534,19 +1608,30 @@ class BaseLocale {
   ///
   /// Rend le nombre de blasts reelslement ecrits (nouveaux, modifies, supprimes).
   int recevoirBlasts(List<BlastServeur> liste) {
-    // La liste serveur fait foi : tout blast local qui n'y figure plus est
-    // considere obsolete (renomme, supprime, change de numero) et purge.
-    // Sinon le dropdown garde les anciens 119/120/121 et l'app diverge du
-    // sheet. Cote blocs/cartes : on aligne les enfants sur les parents
-    // conserves, jamais de perte de verrou ni de ligne sur un bloc reste.
+    // La liste serveur fait foi pour la STRUCTURE (blasts, cartes/RL, blocs).
+    // Ce qui appartient au poste n'est jamais touche : lignes saisies, photos,
+    // verrous. Un blast ou un bloc qui porte des donnees locales est conserve
+    // et signale comme orphelin au lieu d'etre supprime en silence.
     final Set<String> numerosServeur = <String>{
       for (final BlastServeur s in liste)
         if (s.numero.isNotEmpty) s.numero,
     };
-    final List<String> numerosObsoletes = <String>[
-      for (final Blast b in blasts)
-        if (!numerosServeur.contains(b.numero)) b.numero,
-    ];
+
+    // Blast absent du serveur : purge UNIQUEMENT s'il ne contient aucune
+    // donnee saisie (aucune ligne, aucun verrou).
+    final List<String> numerosObsoletes = <String>[];
+    final List<String> blastsConserves = <String>[];
+    for (final Blast b in blasts) {
+      if (numerosServeur.contains(b.numero)) continue;
+      final bool conserve = b.blocs.any(
+        (BlocTravail bloc) => bloc.verrouille || bloc.nombreLignes > 0,
+      );
+      if (conserve) {
+        blastsConserves.add(b.numero);
+      } else {
+        numerosObsoletes.add(b.numero);
+      }
+    }
     // Log de diagnostic : la prochaine fois que l'utilisateur voit encore
     // 119/120/121 apres une synchro, on saura immediatement si le serveur
     // a envoye la nouvelle liste (et donc si la purge a bien eu lieu) ou
@@ -1574,46 +1659,97 @@ class BaseLocale {
       );
       ecrits += numerosObsoletes.length;
     }
+    if (blastsConserves.isNotEmpty) {
+      journaliser(
+        'BLASTS orphelins conserves (donnees locales) : '
+        '${blastsConserves.join(', ')}',
+      );
+    }
 
     for (final BlastServeur serveur in liste) {
       if (serveur.numero.isEmpty || serveur.carte.isEmpty) continue;
       final Blast? existant = parNumero(serveur.numero);
       if (existant != null) {
-        // Mise a jour : meme numero, on ne duplique pas. Un bloc venu du
-        // serveur s'ajoute seulement s'il manque deja (jamais de perte de
-        // verrou ni de lignes sur un bloc existant).
-        final String premiereCarte = serveur.cartes.isNotEmpty
-            ? serveur.cartes.first
-            : serveur.carte;
-        bool change = !(existant.cartes.length == 1 &&
-                existant.cartes.first == premiereCarte) ||
-            existant.plan != _planDe(serveur);
-        // On aligne la liste de cartes sur celle du serveur : un blast peut
-        // couvrir plusieurs RL (cartes), la reception serveur fait foi.
-        existant.cartes = <String>[premiereCarte];
-        existant.plan = _planDe(serveur);
-        for (final String numeroBloc in serveur.blocs) {
-          if (numeroBloc.isEmpty) continue;
-          if (existant.bloc(numeroBloc) == null) {
-            existant.blocs.add(
-              BlocTravail(numero: numeroBloc, carte: premiereCarte),
-            );
-            change = true;
+        // Cartes/RL : la liste serveur fait foi (remplacement, pas fusion).
+        // Le plan local deja telecharge n'est jamais perdu.
+        final List<String> cartesServeur = serveur.cartes.isNotEmpty
+            ? serveur.cartes
+            : <String>[serveur.carte];
+        existant.cartes
+          ..clear()
+          ..addAll(cartesServeur);
+        if (existant.plan.isEmpty || existant.plan.startsWith('http')) {
+          existant.plan = _planDe(serveur);
+        }
+        // Blocs rattaches a leur carte (RL) quand le serveur les fournit ;
+        // sinon repli sur la liste plate appliquee a la premiere carte.
+        final Map<String, List<String>> parCarte =
+            serveur.blocsParCarte.isNotEmpty
+                ? serveur.blocsParCarte
+                : <String, List<String>>{
+                    cartesServeur.first: serveur.blocs,
+                  };
+        // Ensemble des cles (numero, carte) attendues par le serveur.
+        final Set<String> clesServeur = <String>{};
+        for (final MapEntry<String, List<String>> e in parCarte.entries) {
+          for (final String numeroBloc in e.value) {
+            if (numeroBloc.isEmpty) continue;
+            clesServeur.add('$numeroBloc\u0000${e.key}');
+            // Cle (blast, bloc, carte) : le meme numero de bloc peut exister
+            // sur plusieurs RL du meme blast, ce sont deux blocs distincts.
+            if (!existant.aBloc(numeroBloc, e.key)) {
+              existant.blocs.add(
+                BlocTravail(numero: numeroBloc, carte: e.key),
+              );
+            }
           }
         }
-        if (!change) continue;
+        // Blocs locaux absents du serveur : suppression seulement s'ils ne
+        // portent ni ligne saisie ni verrou (donnees du poste intouchables).
+        final List<BlocTravail> blocsRetires = <BlocTravail>[];
+        for (final BlocTravail bloc in existant.blocs) {
+          final String cle = '${bloc.numero}\u0000${bloc.carte}';
+          if (clesServeur.contains(cle)) continue;
+          if (bloc.verrouille || bloc.nombreLignes > 0) continue;
+          blocsRetires.add(bloc);
+        }
+        if (blocsRetires.isNotEmpty) {
+          existant.blocs.removeWhere(blocsRetires.contains);
+          _ecrire((Database db) async {
+            for (final BlocTravail bloc in blocsRetires) {
+              await db.delete(
+                'blocs',
+                where: 'blast = ? AND numero = ? AND carte = ?',
+                whereArgs: <Object?>[
+                  serveur.numero,
+                  bloc.numero,
+                  bloc.carte,
+                ],
+              );
+            }
+          });
+          journaliser(
+            'RETRAIT blocs absents du serveur (blast ${serveur.numero}) : '
+            '${blocsRetires.map((b) => '${b.numero}@${b.carte}').join(', ')}',
+          );
+        }
         _ecrire((Database db) async {
           await db.update(
             'blasts',
             <String, Object?>{
-              'carte': premiereCarte,
+              'carte': existant.cartes.join(','),
               'plan': existant.plan,
             },
             where: 'numero = ?',
             whereArgs: <Object?>[serveur.numero],
           );
           for (final BlocTravail bloc in existant.blocs) {
-            await _ecrireBlocSiAbsent(db, serveur.numero, bloc.numero);
+            await _ecrireBlocSiAbsent(
+              db,
+              serveur.numero,
+              bloc.numero,
+              bloc.carte,
+            );
           }
         });
         journaliser(
@@ -1621,30 +1757,53 @@ class BaseLocale {
           '${existant.blocs.length} bloc(s), carte ${serveur.carte})',
         );
       } else {
-        // Nouveau blast : cree avec ses blocs, sans ligne et sans verrou.
-        final String premiereCarte = serveur.cartes.isNotEmpty
-            ? serveur.cartes.first
-            : serveur.carte;
+        // Nouveau blast : cree avec ses cartes et ses blocs.
+
+
+
+        final List<String> cartesServeur = serveur.cartes.isNotEmpty
+            ? serveur.cartes
+            : <String>[serveur.carte];
+        final Map<String, List<String>> parCarte =
+            serveur.blocsParCarte.isNotEmpty
+                ? serveur.blocsParCarte
+                : <String, List<String>>{
+                    cartesServeur.first: serveur.blocs,
+                  };
+        final List<BlocTravail> blocsInitiaux = <BlocTravail>[];
+        for (final MapEntry<String, List<String>> e in parCarte.entries) {
+          for (final String numeroBloc in e.value) {
+            if (numeroBloc.isEmpty) continue;
+            if (blocsInitiaux.any((BlocTravail b) =>
+                b.numero == numeroBloc && b.carte == e.key)) {
+              continue;
+            }
+            blocsInitiaux.add(
+              BlocTravail(numero: numeroBloc, carte: e.key),
+            );
+          }
+        }
         final Blast blast = Blast(
           numero: serveur.numero,
-          cartes: <String>[premiereCarte],
+          cartes: List<String>.from(cartesServeur),
           plan: _planDe(serveur),
-          blocs: <BlocTravail>[
-            for (final String numeroBloc in serveur.blocs)
-              if (numeroBloc.isNotEmpty)
-                BlocTravail(numero: numeroBloc, carte: premiereCarte),
-          ],
+          blocs: blocsInitiaux,
         );
         blasts.add(blast);
         _ecrire((Database db) async {
           await db.insert('blasts', <String, Object?>{
             'numero': blast.numero,
-            'carte': premiereCarte,
+            'carte': blast.cartes.join(','),
             'plan': blast.plan,
             'envoye': 0,
           });
           for (final BlocTravail bloc in blast.blocs) {
-            await _ecrireBlocSiAbsent(db, blast.numero, bloc.numero);
+            await _ecrireBlocSiAbsent(
+              db,
+              blast.numero,
+              bloc.numero,
+              bloc.carte,
+            );
           }
         });
         journaliser(
@@ -1681,6 +1840,9 @@ class BaseLocale {
   /// Chemins locaux des plans deja telecharges, par code de carte.
   final Map<String, String> _plansLocaux = <String, String>{};
 
+  /// Chemin du plan local pour une carte donnee, si telecharge.
+  String? planDe(String carte) => _plansLocaux[carte];
+
   /// Pose le chemin local d'un plan telecharge : les blasts de cette carte
   /// lisent desormais le fichier au lieu de l'URL serveur.
   void poserPlanLocal(String carte, String cheminFichier) {
@@ -1706,13 +1868,21 @@ class BaseLocale {
     Database db,
     String numeroBlast,
     String numeroBloc,
+    String carte,
   ) async {
-    if (await _idDuBloc(db, numeroBlast, numeroBloc) != null) return;
-    await db.insert('blocs', <String, Object?>{
-      'blast': numeroBlast,
-      'numero': numeroBloc,
-      'verrouille': 0,
-    });
+    if (await _idDuBloc(db, numeroBlast, numeroBloc, carte: carte) != null) {
+      return;
+    }
+    await db.insert(
+      'blocs',
+      <String, Object?>{
+        'blast': numeroBlast,
+        'numero': numeroBloc,
+        'carte': carte,
+        'verrouille': 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   // ------------------------------------------------------------------ seeds

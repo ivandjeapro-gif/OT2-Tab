@@ -668,8 +668,6 @@ class _SpotterScreenState extends State<SpotterScreen> {
               child: _BlastOption(
                 numero: numero,
                 blast: session.base.parNumero(numero)!,
-                libelle: session.base
-                    .libelleCarte(session.base.parNumero(numero)!.carte),
                 actif: numero == _blast?.numero,
               ),
             ),
@@ -679,21 +677,63 @@ class _SpotterScreenState extends State<SpotterScreen> {
     if (choisi != null) session.selectionnerBlast(choisi);
   }
 
-  Future<void> _choisirBloc() async {
+  /// Ouvre la liste des RL (flitches) du blast courant.
+  Future<void> _choisirRL() async {
     final Blast? blast = _blast;
     if (blast == null) return;
+    final List<String> rls = blast.rls;
+    if (rls.isEmpty) return;
     final String? choisi = await showDialog<String>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: const Text('Select bloc'),
+        title: const Text('Select RL'),
         children: [
-          // Blocs du blast courant, lus dans la base.
-          for (final bloc in session.base.blocsDe(blast.numero))
+          for (final String rl in rls)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, rl),
+              child: _RlOption(
+                rl: rl,
+                carte: blast.carteDuRl(rl),
+                libelle: session.base.libelleCarte(blast.carteDuRl(rl) ?? ''),
+                actif: rl == session.rlCourant,
+                nombreBlocs: blast.blocsDuRl(rl).length,
+              ),
+            ),
+        ],
+      ),
+    );
+    if (choisi != null) session.selectionnerRL(choisi);
+  }
+
+  Future<void> _choisirBloc() async {
+    final Blast? blast = _blast;
+    if (blast == null) return;
+    // Le RL courant fait foi : on n'affiche QUE ses blocs. Aucun repli sur
+    // les blocs des autres RL — sinon un RL sans bloc (ou pas encore
+    // synchronise) afficherait les blocs du premier RL.
+    final String rl = session.rlCourant;
+    final List<BlocTravail> liste =
+        rl.isEmpty ? blast.blocs : blast.blocsDuRl(rl);
+    if (liste.isEmpty) {
+      session.push(
+        rl.isEmpty
+            ? 'Aucun bloc sur le blast ${blast.numero}'
+            : 'Aucun bloc sur le RL $rl',
+      );
+      return;
+    }
+    final String carteRl = session.carteCourante;
+    final String? choisi = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text(rl.isEmpty ? 'Select bloc' : 'Select bloc - RL $rl'),
+        children: [
+          for (final bloc in liste)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(context, bloc.numero),
               child: _BlocOption(
                 bloc: bloc,
-                carte: blast.carte,
+                carte: carteRl,
                 actif: bloc == _bloc,
               ),
             ),
@@ -718,12 +758,15 @@ class _SpotterScreenState extends State<SpotterScreen> {
     // defilement de secours couvre le cas ou la boite reste trop haute.
     final double largeur = (ecran.width * 0.7).clamp(0.0, 720.0).toDouble();
     final double hauteur = (ecran.height * 0.45).clamp(0.0, 480.0).toDouble();
-    final String libelle = session.base.libelleCarte(blast.carte) ?? '';
+    final String codeCarte = session.carteCourante.isNotEmpty
+        ? session.carteCourante
+        : blast.carte;
+    final String libelle = session.base.libelleCarte(codeCarte) ?? '';
 
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Carte ${blast.carte}'),
+        title: Text('Carte $codeCarte'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -749,7 +792,7 @@ class _SpotterScreenState extends State<SpotterScreen> {
                   child: SizedBox(
                     width: largeur,
                     height: hauteur,
-                    child: _ImagePlan(chemin: blast.plan),
+                    child: _ImagePlan(chemin: session.planCourant ?? blast.plan),
                   ),
                 ),
               ),
@@ -795,33 +838,40 @@ class _SpotterScreenState extends State<SpotterScreen> {
                     final List<Widget> boutons = [
                       _FilterButton(
                         titre: 'Select blast',
-                        valeur: blast == null
-                            ? null
-                            : (session.base.libelleCarte(blast.carte) ??
-                                blast.numero),
+                        valeur: blast == null ? null : 'Blast ${blast.numero}',
                         detail: blast == null
                             ? null
-                            : '${blast.nombreBlocs} bloc(s)',
+                            : (blast.rls.isNotEmpty
+                                ? '${blast.rls.length} RL'
+                                : '${blast.nombreBlocs} bloc(s)'),
                         onTap: _choisirBlast,
                       ),
                       _FilterButton(
+                        titre: 'RL',
+                        valeur: session.rlCourant.isEmpty ? null : 'RL ${session.rlCourant}',
+                        detail: blast == null || blast.rls.isEmpty
+                            ? null
+                            : '${blast.blocsDuRl(session.rlCourant).length} bloc(s)',
+                        onTap: (blast == null || blast.rls.isEmpty) ? null : _choisirRL,
+                      ),
+                      _FilterButton(
                         titre: 'Select bloc',
-                        valeur: bloc?.numero,
+                        valeur: bloc?.numero == null ? null : 'Bloc ${bloc!.numero}',
                         detail: bloc == null
                             ? null
                             : '${bloc.nombreLignes} ligne(s)'
                                   '${bloc.verrouille ? ' - verrouille' : ''}',
                         onTap: _choisirBloc,
                       ),
-                      // La carte appartient au blast, pas au bloc : le choix du
-                      // blast la selectionne de facto, donc ce bouton n'expose
-                      // aucun menu, il ouvre seulement le plan en grand.
+                      // La carte appartient au blast et au RL courant.
                       _FilterButton(
                         titre: 'Afficher map',
-                        valeur: blast?.carte,
-                        detail: blast == null
+                        valeur: session.carteCourante.isNotEmpty
+                            ? session.carteCourante
+                            : blast?.carte,
+                        detail: session.carteCourante.isEmpty
                             ? null
-                            : session.base.libelleCarte(blast.carte),
+                            : session.base.libelleCarte(session.carteCourante),
                         lectureSeule: true,
                         apercu: session.planCourant,
                         onTap: _afficherCarte,
@@ -849,7 +899,7 @@ class _SpotterScreenState extends State<SpotterScreen> {
                         SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                     ];
 
-                    if (contraintes.maxWidth < 700) {
+                    if (contraintes.maxWidth < 860) {
                       return Column(
                         children: [
                           Row(
@@ -857,16 +907,18 @@ class _SpotterScreenState extends State<SpotterScreen> {
                               Expanded(child: boutons[0]),
                               SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                               Expanded(child: boutons[1]),
+                              SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
+                              Expanded(child: boutons[2]),
                             ],
                           ),
                           SizedBox(height: (8 * mise.k).clamp(3.0, 8.0)),
                           Row(
                             children: [
-                              Expanded(child: boutons[2]),
-                              SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                               Expanded(child: boutons[3]),
                               SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
                               Expanded(child: boutons[4]),
+                              SizedBox(width: (8 * mise.k).clamp(3.0, 8.0)),
+                              Expanded(child: boutons[5]),
                             ],
                           ),
                         ],
@@ -1055,23 +1107,26 @@ class _BlastOption extends StatelessWidget {
   const _BlastOption({
     required this.numero,
     required this.blast,
-    required this.libelle,
     required this.actif,
   });
 
   final String numero;
   final Blast blast;
-  final String? libelle;
   final bool actif;
 
   @override
   Widget build(BuildContext context) {
+    final int nbRl = blast.rls.length;
+    final String infoRl = nbRl > 0 ? '$nbRl RL' : '';
+    final String infoBlocs = '${blast.nombreBlocs} bloc(s)';
+    final String detail = [infoRl, infoBlocs].where((s) => s.isNotEmpty).join(' · ');
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Flexible(
           child: Text(
-            libelle ?? 'Blast $numero',
+            'Blast $numero',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -1082,8 +1137,7 @@ class _BlastOption extends StatelessWidget {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            '${blast.nombreBlocs} bloc(s)'
-            '${blast.verrouille ? ' - verrouille' : ''}',
+            '$detail${blast.verrouille ? ' - verrouille' : ''}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             textAlign: TextAlign.right,
@@ -1214,6 +1268,54 @@ class _BoutonPhoto extends StatelessWidget {
   }
 }
 
+/// Une option RL (flitch) de la liste « Select RL ».
+class _RlOption extends StatelessWidget {
+  const _RlOption({
+    required this.rl,
+    required this.carte,
+    required this.libelle,
+    required this.actif,
+    required this.nombreBlocs,
+  });
+
+  final String rl;
+  final String? carte;
+  final String? libelle;
+  final bool actif;
+  final int nombreBlocs;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Flexible(
+          child: Text(
+            'RL $rl',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontWeight: actif ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            carte == null
+                ? '$nombreBlocs bloc(s)'
+                : '$carte - $nombreBlocs bloc(s)',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 13, color: AppColors.slate),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Un bloc de la liste « Select bloc », avec la carte du blast dont il tient.
 ///
 /// La carte est reportee par la vue : elle appartient au blast, pas au bloc,
@@ -1262,7 +1364,11 @@ class _BlocOption extends StatelessWidget {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            '$carte - ${bloc.nombreLignes} ligne(s)'
+            // On affiche le RL (flitch) de la carte : c'est ce qui permet de
+            // voir d'un coup d'oeil a quel RL appartient le bloc. Le code
+            // complet de la carte reste en info-bulle.
+            '${decoderCarte(bloc.carte)?.flitch ?? carte}'
+            ' - ${bloc.nombreLignes} ligne(s)'
             '${bloc.verrouille ? ' - verrouille' : ''}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,

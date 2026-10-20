@@ -66,7 +66,7 @@ class _NotificationTickerState extends State<NotificationTicker> {
           style: TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.w700,
-            fontSize: (17 * mise.k).clamp(11.0, 17.0),
+            fontSize: (26 * mise.k).clamp(18.0, 30.0),
             letterSpacing: 0.5,
           ),
         ),

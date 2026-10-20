@@ -384,13 +384,15 @@ class WifiP2pStatusBadge extends StatelessWidget {
     final Color color = etat.couleur;
     return _BoiteBadge(
       taille: mise.tailleBadge,
-      couleur: AppColors.border,
+      // Meme couleur que l'interieur : le cadre suit l'etat (rouge/orange/vert)
+      // au lieu d'un gris fixe, pour se lire comme les autres voyants.
+      couleur: color,
       epaisseur: (2 * k).clamp(1.0, 2.0),
       enfant: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.wifi, size: (30 * k).clamp(15.0, 30.0), color: color),
+          Icon(Icons.wifi, size: (46 * k).clamp(20.0, 46.0), color: color),
           SizedBox(height: (4 * k).clamp(2.0, 4.0)),
           Text(
             _libelleConnecte,

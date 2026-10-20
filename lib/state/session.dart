@@ -104,6 +104,7 @@ class Session extends ChangeNotifier {
   /// fonctionnent exactement comme en production.
   Future<void> ouvrirBase({bool demoOffroad = false}) async {
     await base.ouvrir();
+    demarrerSurveillanceReseau();
     // Première alimentation des listes de login (profils, équipements, DT)
     // avant d'afficher l'écran de connexion. Hors réseau, la base locale
     // existante est conservée et l'utilisateur verra l'état d'attente.
@@ -119,6 +120,7 @@ class Session extends ChangeNotifier {
     if (base.numerosBlast.isNotEmpty) {
       selectionnerBlast(base.numerosBlast.first);
     }
+    demo = demoOffroad;
     if (demoOffroad) {
       await _preparerDemoOffroad();
     }
@@ -134,36 +136,62 @@ class Session extends ChangeNotifier {
     // AVANT le demarrage : la premiere mesure ne peut pas passer a cote.
     servicePosition = ServicePosition(
       base: base,
-      fournisseur: demoOffroad ? GpsDemoOffroad() : null,
+      fournisseur: demoOffroad
+          ? GpsDemoOffroad(
+              figerAlerte: true,
+              // Depart du scÃ©nario = le DEPOT connu de la base, en UTM : le
+              // DT simulÃ© part du meme point que la carte affiche.
+              eastingDepart: _demoEastingDepart,
+              northingDepart: _demoNorthingDepart,
+            )
+          : null,
       intervalle: _intervalleGps,
       filtreDistance: _filtreGps,
     );
     _subMesures ??= servicePosition!.mesures.listen(traiterMesure);
     servicePosition!.demarrer();
     if (demoOffroad) {
-      push('MODE DEMO OFFROAD actif - scenario de sortie de parcours en boucle');
+      push('Scenario de demonstration : sortie de parcours en cours');
     }
   }
 
   /// Preparatifs du mode démo : parcours fictif + affectation complète,
   /// pour que la détection d'écart (option B) trouve ses données.
   Future<void> _preparerDemoOffroad() async {
-    // Parcours en ligne droite vers la dumping area (UTM, metres).
-    const String parcours =
-        '[[320453,920443],[320503,920443],[320553,920443],'
-        '[320603,920443],[320653,920443],[320703,920443],'
-        '[320753,920443],[320803,920443],[320853,920443],'
-        '[320903,920443],[320953,920443],[321003,920443],'
-        '[321053,920443],[321103,920443],[321153,920443],'
-        '[321203,920443],[321253,920443],[321303,920443],'
-        '[321353,920443],[321403,920443],[321453,920443],'
-        '[321503,920443],[321553,920443],[321603,920443]]';
+    // Parcours construit entre les points connus de la base (DEPOT -> F5M),
+    // convertis en UTM par la meme projection que les mesures GNSS : la carte
+    // superpose ainsi parcours, position du DT et drapeau au meme endroit des
+    // tuiles OpenStreetMap.
+    final ({double lat, double lng})? depot =
+        base.positionDe(BaseLocale.codeDepart);
+    final ({double lat, double lng})? arrivee = base.positionDe('F5M');
+    final (int e0, int n0) = depot == null
+        ? (487380, 5056620)
+        : Utm.depuisWgs84(depot.lat, depot.lng);
+    final (int e1, int n1) = arrivee == null
+        ? (493170, 5057120)
+        : Utm.depuisWgs84(arrivee.lat, arrivee.lng);
+    final StringBuffer trace = StringBuffer('[[$e0,$n0]');
+    for (int i = 1; i <= 24; i++) {
+      final double t = i / 24;
+      trace.write(',[${(e0 + t * (e1 - e0)).round()},'
+          '${(n0 + t * (n1 - n0)).round()}]');
+    }
+    final String parcours = '${trace.toString()}]';
     await base.enregistrerAffectation(<String, String>{
       'destination': 'F5M',
       'dumping_area': 'RomPad 1',
       'parcours': parcours,
     });
+    // Le GPS simule part du DEPOT : la position du DT et le parcours vivent
+    // au meme endroit de la carte.
+    _demoEastingDepart = e0;
+    _demoNorthingDepart = n0;
   }
+  /// Depart UTM du scÃ©nario GPS de dÃ©mo, pose par [_preparerDemoOffroad]
+  /// d'apres le point DEPOT de la base (zone UTM 31 du site de reference).
+  int _demoEastingDepart = 487380;
+  int _demoNorthingDepart = 5056620;
 
   /// Service de position du device (CDC §5) : demarre a l'ouverture de la
   /// base, arrete a la fermeture de la session.
@@ -178,8 +206,12 @@ class Session extends ChangeNotifier {
   Profil? profile;
   String deviceId = '';
   String deviceName = '';
-
   bool masterConnected = false;
+  /// Vrai quand la session tourne en mode DEMONSTRATION (5 taps sur le logo).
+  /// Les badges reseau et le texte d'alerte suivent alors des valeurs posees
+  /// a la main, pour un rendu de presentation stable et lisible — sans
+  /// dependre de la vraie connectivite (Wi-Fi/BLE souvent absents en demo).
+  bool demo = false;
 
   /// Etat de la 4G (§15). Une coupure ne perd rien : elle arrete seulement
   /// les envois, la file reste en place et reprend seule au retablissement.
@@ -236,7 +268,7 @@ class Session extends ChangeNotifier {
     notifyListeners();
     try {
       await synchro.unePasse();
-      await synchro.unePasseReferentiels();
+      await synchro.unePasseReferentiels(forcer: true);
       await synchro.unePasseBlasts();
       await synchro.unePasseAffectation();
       await synchro.unePasseNotifications();
@@ -334,6 +366,22 @@ class Session extends ChangeNotifier {
     return service.derniere == null ? EtatCouche.recherche : EtatCouche.connecte;
   }
 
+  // ------------------------------------------------------ etats simules (demo)
+  // En mode DEMONSTRATION, les quatre badges de la barre du DT suivent des
+  // valeurs imposees (4G vert, BLE rouge, Wi-Fi rouge, GPS orange) : le rendu
+  // de presentation ne depend plus de la vraie connectivite du poste, souvent
+  // absente quand on presente hors du site. Hors demo, chaque getter retombe
+  // sur l'etat reel mesure ci-dessus.
+  /// Badge 4G de la barre DT : vert en demo, sinon [etat4G].
+  EtatCouche get etat4GAffiche => demo ? EtatCouche.connecte : etat4G;
+  /// Badge BLE de la barre DT : rouge en demo, sinon [etatBle].
+  EtatCouche get etatBleAffiche => demo ? EtatCouche.arret : etatBle;
+  /// Badge Wi-Fi (hotspot) de la barre DT : rouge en demo, sinon [etatWifiP2p].
+  EtatCouche get etatWifiAffiche => demo ? EtatCouche.arret : etatWifiP2p;
+  /// Badge GPS de la barre DT : orange en demo (acquisition en cours),
+  /// sinon [etatGps].
+  EtatCouche get etatGpsAffiche => demo ? EtatCouche.recherche : etatGps;
+
   /// Badge 4G : retour effectif du serveur (CDC §21).
   ///
   /// Rouge si la boucle de synchro n'a pas ete lancee ou si aucune voie de
@@ -377,6 +425,7 @@ class Session extends ChangeNotifier {
     return liensWifi > 0 ? EtatCouche.connecte : EtatCouche.recherche;
   }
 
+
   /// Nombre de liens Wi-Fi P2P authentifies (gateway pour le DT, client
   /// pour le spotter).
   int get liensWifi {
@@ -409,7 +458,12 @@ class Session extends ChangeNotifier {
 
   /// Bloc selectionne dans le blast courant, ou null si le bloc n'existe pas
   /// ou si le RL courant ne lui correspond pas (hierarchie Blast > RL > Bloc).
-  BlocTravail? get bloc => blast?.bloc(blocCourant);
+  BlocTravail? get bloc {
+    final Blast? b = blast;
+    if (b == null) return null;
+    final String c = carteCourante;
+    return b.bloc(blocCourant, carte: c);
+  }
 
   /// Vrai quand le **bloc courant** est verrouille (paire blast/bloc, v6) :
   /// aucune ligne ne peut plus etre ajoutee dans ce bloc, les autres blocs
@@ -553,13 +607,15 @@ class Session extends ChangeNotifier {
   /// Si le bloc choisi n'appartient pas au RL courant, l'appel est refuse :
   /// on garde la coherence de la hierarchie Blast > RL > Bloc.
   void selectionnerBloc(String numero) {
-    if (blocCourant == numero) return;
     final Blast? b = blast;
     if (b == null) return;
-    final BlocTravail? cible = b.bloc(numero);
+    // Recherche STRICTE dans le RL courant : le meme numero de bloc existe
+    // sur chaque RL (1..n), il ne faut jamais prendre celui d'un autre RL.
+    final String carte = carteCourante;
+    final BlocTravail? cible =
+        b.bloc(numero, carte: carte.isEmpty ? null : carte);
     if (cible == null) return;
-    final String? rlCible = decoderCarte(cible.carte)?.flitch;
-    if (rlCible != null && rlCible != rlCourant) return;
+    if (blocCourant == numero) return;
     blocCourant = numero;
     _persisterSelection();
     notifyListeners();
@@ -612,11 +668,26 @@ class Session extends ChangeNotifier {
   bool idAppartientAuType(String codeType, String id) =>
       base.typeDT(codeType)?.contient(id) ?? false;
 
-  /// Plan JPG de la carte du blast courant.
-  ///
-  /// La carte etant celle du blast, il n'y a pas de choix a faire : le plan
-  /// suit la selection du blast sans autre action.
-  String? get planCourant => blast?.plan;
+  /// Carte active selon le RL choisi (ou premiere carte du blast).
+  String get carteCourante {
+    final Blast? b = blast;
+    if (b == null) return '';
+    if (rlCourant.isNotEmpty) {
+      final String? c = b.carteDuRl(rlCourant);
+      if (c != null && c.isNotEmpty) return c;
+    }
+    return b.carte;
+  }
+
+  /// Plan JPG/PNG de la carte courante (selon le RL choisi).
+  String? get planCourant {
+    final String c = carteCourante;
+    if (c.isNotEmpty) {
+      final String? local = base.planDe(c);
+      if (local != null && local.isNotEmpty) return local;
+    }
+    return blast?.plan;
+  }
 
   /// Point de depart du trajet, lu dans la table des positions.
   ({double lat, double lng})? get positionDepart =>
@@ -858,6 +929,14 @@ class Session extends ChangeNotifier {
   /// le repli `alerte` du serveur prend le relais quand aucun parcours n'a
   /// ete recu. Vide = rien a afficher.
   String get alerteCourante {
+    // Mode DEMONSTRATION : l'alerte est affichee des l'ouverture de l'ecran,
+    // sans attendre que le scenario GPS franchisse le seuil — le rendu de
+    // presentation (cadre rouge clignotant, bandeau, bip) est stable du debut
+    // a la fin.
+    if (demo) {
+      return 'DT 05 a fait une sortie de route, retourner et prendre '
+          'le chemin du RomPad 1';
+    }
     if (detecteurEcart.actif && detecteurEcart.horsParcours) {
       final int ecart = (detecteurEcart.derniereDistance ?? 0).round();
       final String cible = dumpingArea.isEmpty ? 'la dumping area' : dumpingArea;
@@ -902,15 +981,15 @@ class Session extends ChangeNotifier {
     northing = mesure.northing;
     elevation = mesure.elevation;
 
-    // Profil excavator (§2.3) : pendant qu'un DT est connecte, chaque position
-    // GNSS de la perle est envoyee en coordonnees de bloc ET accumulee pour la
-    // moyenne de la session. La projection dans le repere du bloc n'existe pas
-    // encore (elle viendra avec l'origine du bloc) : on envoie donc la position
-    // GNSS telle quelle, comme demande ("les coordonnees de chaque position de
-    // la perle grace au GNSS").
-    feederPerle(mesure);
+// Profil excavator (§2.3) : pendant qu'un DT est connecte, chaque position
+// GNSS de la perle est envoyee en coordonnees de bloc ET accumulee pour la
+// moyenne de la session. La projection dans le repere du bloc n'existe pas
+// encore (elle viendra avec l'origine du bloc) : on envoie donc la position
+// GNSS telle quelle, comme demande ("les coordonnees de chaque position de
+// la perle grace au GNSS").
+feederPerle(mesure);
 
-    // CHAQUE mesure est notifiee : les tableaux et la carte se repeignent a
+// CHAQUE mesure est notifiee : les tableaux et la carte se repeignent a
     // chaud a chaque changement de position (hot reload des valeurs GNSS),
     // meme sans alerte. Le push ci-dessous notifie deja, sauf sur les
     // branches ou l'etat d'alerte n'a pas change — on assure donc une
@@ -923,11 +1002,14 @@ class Session extends ChangeNotifier {
     if (actif != _alerteActive) {
       _alerteActive = actif;
       if (actif) {
-        // Front montant : le journal raconte l'entree en alerte.
+        // Front montant : le journal raconte l'entree en alerte, et la voix
+        // off lit le message affiche (le bip, lui, a deja sonne ci-dessus).
         push('Alerte trajet - $alerteCourante');
+        unawaited(alerter.dire(alerteCourante));
         return; // push a deja notifie les ecrans.
       }
-      // Retour au calme : plus rien a dessiner.
+      // Retour au calme : la voix off confirme le retour sur parcours.
+      unawaited(alerter.dire('Retour sur le parcours, bonne route'));
       notifyListeners();
     } else if (actif) {
       // Deja en alerte depuis plusieurs mesures : rafraichit l'ecart affiche.
@@ -1175,8 +1257,8 @@ class Session extends ChangeNotifier {
       push('BLE : permissions refusees - couche BLE inactive');
       return;
     }
-    final bool estExcavatrice = profil.roleCdc == BaseLocale.roleTab3;
-    final bool estDt = profil.roleCdc == BaseLocale.roleTab2;
+    final bool estExcavatrice = BaseLocale.estTab3(profil.roleCdc);
+    final bool estDt = BaseLocale.estTab2(profil.roleCdc);
     transport ??= estExcavatrice
         ? TransportBlePeripherique()
         : TransportBleCentral();
@@ -1310,9 +1392,9 @@ class Session extends ChangeNotifier {
   Future<void> demarrerWifi({TransportWifi? transport}) async {
     final Profil? profil = profile;
     if (profil == null) return;
-    final bool estExcavatrice = profil.roleCdc == BaseLocale.roleTab3;
-    final bool estTab1 = profil.roleCdc == BaseLocale.roleTab1;
-    final bool estDt = profil.roleCdc == BaseLocale.roleTab2;
+    final bool estExcavatrice = BaseLocale.estTab3(profil.roleCdc);
+    final bool estTab1 = BaseLocale.estTab1(profil.roleCdc);
+    final bool estDt = BaseLocale.estTab2(profil.roleCdc);
     if (estExcavatrice) {
       // 1. Le reseau d'abord : Wi-Fi Direct cree le groupe, l'excavatrice en
       //    Group Owner. C'est ce qui remplace le hotspot manuel. Sans cette

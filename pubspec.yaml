@@ -75,6 +75,13 @@ dependencies:
   # Sans cet appel, l'advertising et le scan echouent silencieusement sur
   # Android 12+ meme si le manifeste les declare : elles sont runtime.
   permission_handler: ^11.3.1
+  flutter_tts: ^4.2.5
+  # NOTE: `package:web` (Web Speech API) est volontairement absent des
+  # dependencies classiques : il casse la compilation Android/iOS/Windows
+  # (import de dart:js_interop). Voir alerter.dart : l'import est
+  # conditionnel (web_stub.dart sur les plateformes non-web, package:web
+  # uniquement sur la cible web). Pour activer le build web, ajouter
+  # `web: ^1.1.1` dans un bloc conditionnel dedie.
 
 dev_dependencies:
   flutter_test:

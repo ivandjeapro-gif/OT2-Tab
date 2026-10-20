@@ -307,8 +307,9 @@ class GpsFactice implements FournisseurPosition {
 class GpsDemoOffroad implements FournisseurPosition {
   GpsDemoOffroad({
     this.intervalle = const Duration(seconds: 2),
-    this.eastingDepart = 320453,
-    this.northingDepart = 920443,
+    this.eastingDepart = 500000,
+    this.northingDepart = 718000,
+    this.figerAlerte = false,
   });
 
   /// Cadence des mesures simulées (2 s : assez rapide pour une démo vivante).
@@ -318,6 +319,13 @@ class GpsDemoOffroad implements FournisseurPosition {
   final int eastingDepart;
   final int northingDepart;
 
+  /// Mode PRÉSENTATION : au lieu de revenir sur le parcours (et de faire
+  /// retomber l'alerte), le DT reste au point d'écart maximal. Le bandeau
+  /// rouge et le clignotement du cadre restent alors affichés en permanence —
+  /// c'est l'état qu'on veut montrer, pas un flash de quelques secondes que
+  /// l'on rate au moment de présenter l'écran.
+  final bool figerAlerte;
+
   @override
   Stream<PositionTerrain> suivre() async* {
     int e = eastingDepart;
@@ -325,19 +333,24 @@ class GpsDemoOffroad implements FournisseurPosition {
     // Étapes du scénario : (avancée le long du parcours, écart latéral).
     // La ligne 1 suit la route (écart ~0), la 2 s'en écarte progressivement,
     // la 3 y revient, la 4 marque une pause avant de reboucler.
-    final List<List<int>> script = <List<int>>[
+    final List<List<int>> detour = <List<int>>[
       // 1. Sur le parcours (~15 s de démo à 2 s/mesure).
       [0, 0], [50, 0], [100, 0], [150, 0], [200, 5], [250, 0], [300, 0],
       // 2. Détour : l'écart croît vite → dépasse 40 m → alerte.
       [350, 15], [400, 30], [450, 60], [500, 80], [550, 100],
       [600, 110], [650, 115], [700, 120], [750, 125], [800, 130],
+    ];
+    final List<List<int>> retour = <List<int>>[
       // 3. Retour au parcours : l'écart redescend sous 20 m.
       [850, 90], [900, 50], [950, 25], [1000, 10], [1050, 0], [1100, 0],
       [1150, 0],
       // 4. Petite pause sur place avant de reboucler.
       [1150, 0], [1150, 0],
     ];
-
+    final List<List<int>> script = <List<int>>[
+      ...detour,
+      if (!figerAlerte) ...retour,
+    ];
     while (true) {
       for (final List<int> etape in script) {
         final int avance = etape[0];
@@ -347,15 +360,24 @@ class GpsDemoOffroad implements FournisseurPosition {
           northing: n + ecart,
           elevation: 260,
           horodatage: DateTime.now(),
-          // Le parcours de démo est écrit en UTM : conversion WGS84 inverse
-          // approximative pour la carte (lat ≈ northing/111320, lng ajusté
-          // par cos(lat)) — suffisant pour une démonstration.
-          wgs84: (
-            lat: (n + ecart) / 111320.0,
-            lng: (e + avance) / (111320.0 * 0.60),
-          ),
+          // Pas de WGS84 fourni : la session fait elle-meme la conversion
+          // UTM -> WGS84 (proj4dart, zone 30) et la carte reste coherente —
+          // parcours, position du DT et destination au meme endroit.
         );
         await Future<void>.delayed(intervalle);
+      }
+      // Mode présentation : une fois au point d'écart maximal, on y reste —
+      // l'alerte ne retombe pas, le rendu est stable pour la démonstration.
+      if (figerAlerte) {
+        while (true) {
+          yield PositionTerrain(
+            easting: e + 800,
+            northing: n + 130,
+            elevation: 260,
+            horodatage: DateTime.now(),
+          );
+          await Future<void>.delayed(intervalle);
+        }
       }
     }
   }

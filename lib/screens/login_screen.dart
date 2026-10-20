@@ -39,6 +39,23 @@ class _LoginScreenState extends State<LoginScreen> {
     super.initState();
     final List<Profil> profils = widget.session.base.profilsActifs;
     _profil = profils.isEmpty ? null : profils.first;
+    widget.session.addListener(_surSession);
+  }
+
+  @override
+  void dispose() {
+    widget.session.removeListener(_surSession);
+    super.dispose();
+  }
+
+  void _surSession() {
+    if (!mounted) return;
+    final List<Profil> profils = widget.session.base.profilsActifs;
+    setState(() {
+      if (_profil == null && profils.isNotEmpty) {
+        _profil = profils.first;
+      }
+    });
   }
 
   void _choisirProfil(Profil profil) {
@@ -107,16 +124,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
     // L'ecran suit le role CDC du profil (REQ-002) : TAB 1 = spotter,
     // TAB 2 = DT, TAB 3 = excavatrice. Le libelle, lui, vient de la table.
-    final Widget ecran = switch (profil.roleCdc) {
-      BaseLocale.roleTab2 => DtScreen(session: widget.session),
-      BaseLocale.roleTab3 => ExcavatorScreen(session: widget.session),
-      _ => SpotterScreen(session: widget.session),
-    };
+    final Widget ecran = BaseLocale.estTab2(profil.roleCdc)
+        ? DtScreen(session: widget.session)
+        : BaseLocale.estTab3(profil.roleCdc)
+            ? ExcavatorScreen(session: widget.session)
+            : SpotterScreen(session: widget.session);
 
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(builder: (_) => ecran),
     );
   }
+
+  /// Vrai pendant l'actualisation manuelle : le bouton affiche un spinner
+  /// et refuse les appuis rapproches (meme garde-fou que Session).
+  bool _actualisationEnCours = false;
 
   @override
   Widget build(BuildContext context) {
@@ -133,26 +154,83 @@ class _LoginScreenState extends State<LoginScreen> {
     // `shifted_box.dart:117`.
     final double decalageDroitBoutonParametres =
         (MediaQuery.sizeOf(context).width > 600 ? 32.0 : 18.0) - 4;
-    final Widget boutonParametres = Align(
+    // Bouton « Actualiser » : relance une passe complete de synchronisation
+    // (referentiels, blasts, affectation, notifications). Il permet de
+    // remplir les listes de connexion juste apres avoir saisi api_base /
+    // api_token dans Parametres, sans redemarrer l'application.
+    // Le deuxieme bouton est colle au bord via le meme decalage.
+    final Widget boutons = Align(
       alignment: Alignment.centerRight,
       child: Transform.translate(
         offset: Offset(decalageDroitBoutonParametres, 0),
-        child: TextButton.icon(
-          key: const ValueKey<String>('bouton-parametres'),
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => ParametresScreen(session: widget.session),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextButton.icon(
+              key: const ValueKey<String>('bouton-actualiser'),
+              onPressed: _actualisationEnCours
+                  ? null
+                  : () async {
+                      setState(() => _actualisationEnCours = true);
+                      try {
+                        await widget.session.synchro.unePasseReferentiels(forcer: true);
+                        await widget.session.synchroniserManuellement();
+                      } finally {
+                        if (mounted) {
+                          final List<Profil> profils =
+                              widget.session.base.profilsActifs;
+                          setState(() {
+                            _actualisationEnCours = false;
+                            if (_profil == null && profils.isNotEmpty) {
+                              _profil = profils.first;
+                            }
+                          });
+                        }
+                      }
+                    },
+              icon: _actualisationEnCours
+                  ? SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.slate),
+                    )
+                  : const Icon(Icons.refresh, size: 20, color: AppColors.slate),
+              label: Text(
+                _actualisationEnCours ? 'Actualisation...' : 'Actualiser',
+                style: TextStyle(
+                  fontSize: (15 * mise.k).clamp(12.0, 15.0),
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.slate,
+                ),
+              ),
             ),
-          ),
-          icon: const Icon(Icons.settings, size: 20, color: AppColors.slate),
-          label: Text(
-            'Parametres',
-            style: TextStyle(
-              fontSize: (15 * mise.k).clamp(12.0, 15.0),
-              fontWeight: FontWeight.w700,
-              color: AppColors.slate,
+            TextButton.icon(
+              key: const ValueKey<String>('bouton-parametres'),
+              onPressed: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => ParametresScreen(session: widget.session),
+                  ),
+                );
+                if (mounted) {
+                  final List<Profil> profils = widget.session.base.profilsActifs;
+                  setState(() {
+                    if (_profil == null && profils.isNotEmpty) {
+                      _profil = profils.first;
+                    }
+                  });
+                }
+              },
+              icon: const Icon(Icons.settings, size: 20, color: AppColors.slate),
+              label: Text(
+                'Parametres',
+                style: TextStyle(
+                  fontSize: (15 * mise.k).clamp(12.0, 15.0),
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.slate,
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -167,19 +245,38 @@ class _LoginScreenState extends State<LoginScreen> {
       mise: mise,
       compactPortrait: MiseEnPage.estCompactPortrait(context),
     );
+    final List<String> ids = _profil == null
+        ? const <String>[]
+        : widget.session.base.idsDuProfil(_profil!);
+    final List<String> noms = _profil == null
+        ? const <String>[]
+        : widget.session.base.nomsDuProfil(_profil!);
+    final bool estNominatif = _profil != null &&
+        (BaseLocale.estTab1(_profil!.roleCdc) ||
+            (ids.isNotEmpty &&
+                ids.length == noms.length &&
+                ids.every((i) => noms.contains(i))));
+
     final Widget colonneIdentifiants = _Credentials(
-      // Identifiants et noms enrrols lus dans la base (REQ-002) : les deux
+      // Identifiants et noms enrroles lus dans la base (REQ-002) : les deux
       // menus sortent de la meme table, pas du code.
-      ids: _profil == null
-          ? const <String>[]
-          : widget.session.base.idsDuProfil(_profil!),
-      noms: _profil == null
-          ? const <String>[]
-          : widget.session.base.nomsDuProfil(_profil!),
+      ids: ids,
+      noms: noms,
       id: _id,
       nom: _name,
-      surId: (v) => setState(() => _id = v),
-      surNom: (v) => setState(() => _name = v),
+      estNominatif: estNominatif,
+      surId: (v) => setState(() {
+        _id = v;
+        if (_profil != null && v != null) {
+          _name = widget.session.base.nomDuProfil(_profil!, v) ?? _name;
+        }
+      }),
+      surNom: (v) => setState(() {
+        _name = v;
+        if (_profil != null && v != null) {
+          _id = widget.session.base.idDuProfil(_profil!, v) ?? _id;
+        }
+      }),
       surConnexion: _connecter,
       mise: mise,
       compactPortrait: MiseEnPage.estCompactPortrait(context),
@@ -218,7 +315,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           mise: mise,
                           portraitCompact: portraitCompact,
                           hauteurUtile: hauteurUtile,
-                          boutonParametres: boutonParametres,
+                          boutonParametres: boutons,
                           profils: colonneProfils,
                           identifiants: colonneIdentifiants,
                         ),
@@ -520,6 +617,7 @@ class _Credentials extends StatelessWidget {
     required this.surNom,
     required this.surConnexion,
     required this.mise,
+    this.estNominatif = false,
     this.compactPortrait = false,
   });
 
@@ -536,6 +634,7 @@ class _Credentials extends StatelessWidget {
   final ValueChanged<String?> surNom;
   final VoidCallback surConnexion;
   final MiseEnPage mise;
+  final bool estNominatif;
   final bool compactPortrait;
 
   @override
@@ -546,23 +645,38 @@ class _Credentials extends StatelessWidget {
           : MainAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        SelectField(
-          key: const ValueKey<String>('champ-id'),
-          indice: 'Your Id',
-          valeur: id,
-          elements: ids,
-          surChangement: surId,
-          mise: mise,
-        ),
-        SizedBox(height: compactPortrait ? 10 : mise.ecartElement),
-        SelectField(
-          key: const ValueKey<String>('champ-nom'),
-          indice: 'Name',
-          valeur: nom,
-          elements: noms,
-          surChangement: surNom,
-          mise: mise,
-        ),
+        if (estNominatif) ...[
+          // Profil nominatif (ex. Spotter) : un seul champ pour la personne.
+          SelectField(
+            key: const ValueKey<String>('champ-nom'),
+            indice: 'Nom du spotter',
+            valeur: nom ?? id,
+            elements: noms.isNotEmpty ? noms : ids,
+            surChangement: (v) {
+              surNom(v);
+              surId(v);
+            },
+            mise: mise,
+          ),
+        ] else ...[
+          SelectField(
+            key: const ValueKey<String>('champ-id'),
+            indice: 'Your Id',
+            valeur: id,
+            elements: ids,
+            surChangement: surId,
+            mise: mise,
+          ),
+          SizedBox(height: compactPortrait ? 10 : mise.ecartElement),
+          SelectField(
+            key: const ValueKey<String>('champ-nom'),
+            indice: 'Name',
+            valeur: nom,
+            elements: noms,
+            surChangement: surNom,
+            mise: mise,
+          ),
+        ],
         SizedBox(height: compactPortrait ? 10 : mise.ecartElement),
         // Largeur bornee par la colonne : `largeurBouton` plafonne le bouton,
         // mais sur un ecran plus etroit que cette valeur, le bouton prend la

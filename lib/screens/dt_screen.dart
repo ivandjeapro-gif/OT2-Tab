@@ -122,14 +122,30 @@ class _Carte extends StatelessWidget {
     final ({double lat, double lng})? arrivee = session.positionDestination;
     if (arrivee == null) return const MapPlaceholder();
 
-    return CarteSuivi(
-      destination: session.destination,
-      depart: session.positionDepart,
-      arrivee: arrivee,
-      position: session.positionDt,
-      parcours: session.parcoursCarte,
-      positionParcourue: session.parcoursParcouruCarte,
-      libelleDestination: session.destination,
+    // Cadre de la carte : il clignote en rouge pendant l'alerte (le meme
+    // `Clignotant` que le bandeau, donc la meme periode de 600 ms). Hors
+    // alerte, il reste un simple cadre gris, sans aucun cout d'animation.
+    // C'est la carte entiere qui est enrobee : le clignotement se voit autour
+    // de la zone de suivi, pas seulement sur la banniere de texte.
+    return Clignotant(
+      session: session,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: session.alerteActive ? AppColors.red : AppColors.border,
+            width: 3,
+          ),
+        ),
+        child: CarteSuivi(
+          destination: session.destination,
+          depart: session.positionDepart,
+          arrivee: arrivee,
+          position: session.positionDt,
+          parcours: session.parcoursCarte,
+          positionParcourue: session.parcoursParcouruCarte,
+          libelleDestination: session.destination,
+        ),
+      ),
     );
   }
 }
@@ -158,23 +174,19 @@ class _Valeurs extends StatelessWidget {
     // leur part, et la cede au tableau quand la fenetre est basse. C'est ce
     // qui garantit a la fois la proportion stable et l'absence de debordement.
     //
-    // Somme des flex = 16, soit : bandeau d'alerte 1/16, bandeau
-    // d'affectation 1/16, premier tableau 7/16, second tableau 7/16.
+    // Somme des flex = 25, soit : bandeau d'affectation 5/25, premier
+    // tableau 10/25, second tableau 10/25. Le bandeau d'alerte n'a plus de
+    // place propre : quand une alerte se declenche, elle se superpose (en
+    // Stack) a la banniere d'affectation, sans deplacer les tableaux.
     return Column(
       children: [
         Flexible(
-          flex: 1,
+          flex: 5,
           fit: FlexFit.loose,
           child: Clignotant(
             session: session,
-            child: _BanniereAlerte(session: session),
+            child: _BanniereAffectation(session: session),
           ),
-        ),
-        SizedBox(height: 10 * k),
-        Flexible(
-          flex: 5,
-          fit: FlexFit.loose,
-          child: _BanniereAffectation(session: session),
         ),
         SizedBox(height: 15 * k),
         Expanded(
@@ -222,76 +234,22 @@ class _Valeurs extends StatelessWidget {
   }
 }
 
-/// Bandeau d'alerte de trajet (detection d'ecart, options A et B).
-///
-/// Deux sources se rejoignent dans [Session.alerteCourante] :
-/// - la detection locale : le DT s'eloigne de plus de 40 m du parcours
-///   vers la dumping area pendant 15 s (champ `parcours` du serveur) ;
-/// - le repli serveur : champ `alerte` (geofences cote serveur).
-/// Le bandeau est rouge, affiche l'ecart mesure quand il existe, et
-/// disparait des que le DT revient sur son trajet. Chaque mesure pendant
-/// l'alerte rejoue en plus le bip et la vibration (voir [Session.alerter]).
-/// L'alerte disparaît d'elle-même quand le serveur cesse de l'envoyer.
-class _BanniereAlerte extends StatelessWidget {
-  const _BanniereAlerte({required this.session});
-
-  final Session session;
-
-  @override
-  Widget build(BuildContext context) {
-    final String message = session.alerteCourante;
-    if (message.isEmpty) return const SizedBox.shrink();
-
-    final double k = MiseEnPage.depuis(context).k;
-    final double police = (17 * k).clamp(12.0, 17.0);
-
-    final double hauteur = (30 * k).clamp(18.0, 30.0);
-
-    return Container(
-      width: double.infinity,
-      // Hauteur bornee : le bandeau ne prend que sa ligne, et jamais plus que
-      // la place disponible. Sa hauteur naturelle dependait de la police et
-      // du retour a la ligne, ce qui faisait deborder la colonne sur une
-      // fenetre basse.
-      height: hauteur,
-      padding: EdgeInsets.symmetric(horizontal: 12 * k),
-      decoration: BoxDecoration(
-        color: AppColors.red,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.warning,
-            size: (22 * k).clamp(15.0, 22.0),
-            color: Colors.white,
-          ),
-          SizedBox(width: 10 * k),
-          Expanded(
-            child: Text(
-              message,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontFamily: kSerif,
-                fontSize: police,
-                fontWeight: FontWeight.w700,
-                color: Colors.white,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Bandeau d'etat de l'affectation, au dessus des deux tableaux.
 ///
 /// D'ou viennent la destination et la dumping area : aucune des deux n'est
 /// saisissable ici, elles sont choisies **et validees par le serveur**. Le
 /// bandeau affiche l'horodatage de cette validation, ou signale que le
 /// serveur n'a encore rien renvoye.
+///
+/// En alerte de trajet (detection d'ecart, options A et B), ce meme bandeau
+/// bascule sur le message d'ecart : fond rouge, icone warning, texte blanc.
+/// Deux sources se rejoignent dans [Session.alerteCourante] :
+/// - la detection locale : le DT s'eloigne de plus de 40 m du parcours
+///   vers la dumping area pendant 15 s (champ `parcours` du serveur) ;
+/// - le repli serveur : champ `alerte` (geofences cote serveur).
+/// L'alerte disparait des que le DT revient sur son trajet ou que le serveur
+/// cesse de l'envoyer ; chaque mesure GPS pendant l'alerte rejoue le bip et
+/// la vibration (voir [Session.alerter]).
 class _BanniereAffectation extends StatelessWidget {
   const _BanniereAffectation({required this.session});
 
@@ -301,41 +259,62 @@ class _BanniereAffectation extends StatelessWidget {
   Widget build(BuildContext context) {
     final double k = MiseEnPage.depuis(context).k;
     final bool recue = session.affectationRecue;
+    final bool alerte = session.alerteActive;
+    final String messageAlerte = session.alerteCourante;
     final double police = (17 * k).clamp(12.0, 17.0);
 
     final double hauteur = (28 * k).clamp(18.0, 28.0);
 
     return Container(
       width: double.infinity,
-      // Meme regle que le bandeau d'alerte : une seule ligne, hauteur bornee.
+      // Meme regle que la banniere d'affectation : hauteur bornee, une ligne.
+      // En alerte, le contenu bascule sur le message d'ecart : l'alerte ne
+      // reserve plus de place propre dans la colonne, elle reutilise cette
+      // banniere (fond rouge, icone warning) et les tableaux ne bougent pas.
       height: hauteur,
       padding: EdgeInsets.symmetric(horizontal: 12 * k),
       decoration: BoxDecoration(
-        color: recue ? AppColors.paper : AppColors.tan,
-        border: Border.all(color: recue ? AppColors.green : AppColors.border),
+        color: alerte
+            ? AppColors.red
+            : recue
+                ? AppColors.paper
+                : AppColors.tan,
+        border: Border.all(
+          color: alerte
+              ? AppColors.red
+              : recue
+                  ? AppColors.green
+                  : AppColors.border,
+        ),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Row(
         children: [
           Icon(
-            recue ? Icons.verified : Icons.schedule,
+            alerte
+                ? Icons.warning
+                : recue
+                    ? Icons.verified
+                    : Icons.schedule,
             size: (20 * k).clamp(14.0, 20.0),
-            color: recue ? AppColors.green : const Color(0xFF6E7278),
+            color: alerte || recue ? Colors.white : const Color(0xFF6E7278),
           ),
           SizedBox(width: 8 * k),
           Expanded(
             child: Text(
-              recue
-                  ? 'Validé par le serveur · '
-                      '${heureLocal(session.horodatageAffectation)}'
-                  : 'Affectation en attente du serveur',
+              alerte
+                  ? messageAlerte
+                  : recue
+                      ? 'Validé par le serveur · '
+                          '${heureLocal(session.horodatageAffectation)}'
+                      : 'Affectation en attente du serveur',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontFamily: kSerif,
                 fontSize: police,
                 fontWeight: FontWeight.w700,
-                color: AppColors.ink,
+                color: alerte ? Colors.white : AppColors.ink,
               ),
             ),
           ),
@@ -372,21 +351,19 @@ class _TopBar extends StatelessWidget {
     // la barre debordait. Chaque groupe passe donc par un FittedBox
     // `scaleDown` : taille normale quand ca tient, reduit sinon — jamais de
     // debordement.
+    // Barre a quatre badges d'etat : 4G a gauche du nom, puis BLE, Wi-Fi
+    // (hotspot) et GPS a droite. Chaque badge passe par `_BadgeAdaptatif` :
+    // sa boite garde sa proportion au lieu d'etre rognee par un FittedBox,
+    // qui coupait le libelle et faisait deborder la barre.
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // Reseaux externes (vers le serveur) a gauche du nom : la 4G.
-        // Les badges passent par `_BadgeAdaptatif` : leur boite garde sa
-        // proportion au lieu d'etre rognee par un FittedBox, qui coupait le
-        // libelle et faisait deborder la barre en hauteur.
+        // Reseau externe (vers le serveur) : la 4G.
         Flexible(
           flex: 1,
           child: _BadgeAdaptatif(
             alignement: Alignment.centerLeft,
-            child: Clignotant(
-              session: session,
-              child: GsmStatusBadge(etat: session.etat4G),
-            ),
+            child: GsmStatusBadge(etat: session.etat4GAffiche),
           ),
         ),
         Expanded(
@@ -395,8 +372,8 @@ class _TopBar extends StatelessWidget {
             child: FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
-                // Titre du profil (table `profils`) tant que le nom de
-                // l'equipement n'est pas connu.
+                // Nom de l'equipement (ou titre du profil tant qu'il n'est
+                // pas connu).
                 session.deviceName.isEmpty
                     ? (session.profile?.titre ?? 'DT')
                     : session.deviceName,
@@ -422,26 +399,34 @@ class _TopBar extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Clignotant(
-                  session: session,
-                  child: BleStatusBadge(
-                    etat: session.etatBle,
-                    nombreClients: session.liensBle,
+                // Test direct de la voix off : deverrouille l'audio du
+                // navigateur web (autoplay policy) puis fait parler le TTS.
+                // Utile des l'arrivee sur l'ecran, sans attendre une alerte.
+                IconButton(
+                  tooltip: 'Tester la voix off',
+                  icon: Icon(
+                    Icons.volume_up,
+                    size: 26 * k,
+                    color: AppColors.ink,
                   ),
+                  onPressed: () async {
+                    session.alerter.deverrouillerAudioWeb();
+                    await session.alerter
+                        .dire('Test de la voix off, alerte trajet operationnelle');
+                  },
+                ),
+                SizedBox(width: 6 * k),
+                BleStatusBadge(
+                  etat: session.etatBleAffiche,
+                  nombreClients: session.liensBle,
                 ),
                 SizedBox(width: 10 * k),
-                Clignotant(
-                  session: session,
-                  child: WifiP2pStatusBadge(
-                    etat: session.etatWifiP2p,
-                    nombreClients: session.liensWifi,
-                  ),
+                WifiP2pStatusBadge(
+                  etat: session.etatWifiAffiche,
+                  nombreClients: session.liensWifi,
                 ),
                 SizedBox(width: 10 * k),
-                Clignotant(
-                  session: session,
-                  child: GpsStatusBadge(etat: session.etatGps),
-                ),
+                GpsStatusBadge(etat: session.etatGpsAffiche),
               ],
             ),
           ),

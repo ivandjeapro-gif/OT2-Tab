@@ -253,11 +253,45 @@ class Blast {
       .where((BlocTravail b) => decoderCarte(b.carte)?.flitch == rl)
       .toList(growable: false);
 
-  BlocTravail? bloc(String numero) {
-    for (final bloc in blocs) {
-      if (bloc.numero == numero) return bloc;
+  /// Blocs regroupes par RL (flitch), dans l'ordre des cartes du blast.
+  ///
+  /// C'est la vue de reference de l'ecran spotter : chaque RL porte
+  /// uniquement ses propres blocs, meme lorsque deux RL d'un meme blast
+  /// numérotent leurs blocs de 1 a n (ils ne se melangent donc jamais).
+  Map<String, List<BlocTravail>> get blocsParRl {
+    final Map<String, List<BlocTravail>> sortie =
+        <String, List<BlocTravail>>{};
+    for (final String rl in rls) {
+      sortie[rl] = blocsDuRl(rl);
+    }
+    return sortie;
+  }
+
+  /// Bloc identifie par sa paire (numero, carte).
+  ///
+  /// Quand [carte] est fournie, la recherche est STRICTE : un bloc de meme
+  /// numero appartenant a un autre RL n'est jamais retourne. Deux RL d'un
+  /// meme blast numerotent leurs blocs de 1 a n ; confondre les deux ferait
+  /// afficher les blocs de 260 sur le RL 262.5.
+  BlocTravail? bloc(String numero, {String? carte}) {
+    if (carte != null && carte.isNotEmpty) {
+      for (final b in blocs) {
+        if (b.numero == numero && b.carte == carte) return b;
+      }
+      return null;
+    }
+    for (final b in blocs) {
+      if (b.numero == numero) return b;
     }
     return null;
+  }
+
+  /// Vrai si ce blast contient deja le bloc [numero] sur la [carte] donnee.
+  bool aBloc(String numero, String carte) {
+    for (final b in blocs) {
+      if (b.numero == numero && b.carte == carte) return true;
+    }
+    return false;
   }
 
   /// Nombre de lignes du blast entier, tous blocs confondus.

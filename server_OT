@@ -632,6 +632,13 @@ function referentielsLire() {
   });
 }
 
+/** Compare deux numeros de blast (« 106 », « 232.5 ») numeriquement. */
+function comparerNumeros(a, b) {
+  const na = Number(a), nb = Number(b);
+  if (isFinite(na) && isFinite(nb) && na !== nb) return na - nb;
+  return String(a).localeCompare(String(b));
+}
+
 function blastsLire() {
   const blasts = lireTable(CONFIG.ONGLETS.BLASTS);
   const blocs = lireTable(CONFIG.ONGLETS.BLOCS);
@@ -643,47 +650,86 @@ function blastsLire() {
     if (code) cartes[code] = c;
   }
 
-  // Nouveau regroupement : chaque bloc porte sa `carte` (RL), donc on peut
-  // deduire la liste `cartes` d'un blast a partir de ses blocs. Pour les
-  // donnees legacy (blocs sans `carte`), on retombe sur `blasts.carte`.
+  // Chaque bloc porte SA carte (son RL). On indexe par PATTERN du blast
+  // (le vrai numero de blast), et non par `blocs.blast` qui peut encore
+  // contenir un flitch issu d'une ancienne amorce.
   const blocsParBlast = {};
-  const cartesParBlast = {};
+  const blocsParBlastCarte = {};
   for (const b of blocs) {
-    const num = String(b.numero || '');
-    const blastRef = String(b.blast || '');
+    const num = String(b.numero || '').trim();
     const carteBloc = String(b.carte || '').trim();
-    (blocsParBlast[blastRef] = blocsParBlast[blastRef] || []).push(num);
-    if (carteBloc) {
-      (cartesParBlast[blastRef] = cartesParBlast[blastRef] || []);
-      if (cartesParBlast[blastRef].indexOf(carteBloc) < 0) {
-        cartesParBlast[blastRef].push(carteBloc);
-      }
+    if (num === '' || carteBloc === '') continue;
+    const d = decoderCarte(carteBloc);
+    if (!d || !d.numero) continue;
+    const numBlast = String(d.numero);
+    (blocsParBlast[numBlast] = blocsParBlast[numBlast] || []).push(num);
+    const cle = numBlast + '||' + carteBloc;
+    (blocsParBlastCarte[cle] = blocsParBlastCarte[cle] || []).push(num);
+  }
+
+  // Regroupement par NUMERO DE BLAST, et non par le numero stocke dans
+  // l'onglet `blasts` : le vrai identifiant de blast est le PATTERN de la
+  // carte (decoderCarte(...).numero = pattern), tandis que le flitch est le
+  // RL. Une ancienne amorce a pu ecrire le flitch dans `blasts.numero` ; on
+  // ne s'en sert donc jamais. Deux cartes de meme pattern (ex. 260_..._113_6
+  // et 262.5_..._113_5) deviennent UN SEUL blast 113, avec ses deux RL.
+  const parPattern = {};
+  for (const b of blasts) {
+    const code = String(b.carte || '').trim();
+    if (code === '') continue;
+    const d = decoderCarte(code);
+    if (!d || !d.numero) continue;
+    const numBlast = String(d.numero);
+    if (!parPattern[numBlast]) parPattern[numBlast] = [];
+    if (parPattern[numBlast].indexOf(code) < 0) {
+      parPattern[numBlast].push(code);
+    }
+  }
+  // Cartes presentes dans `cartes` mais absentes de `blasts` : on les
+  // rattache aussi par pattern, sinon un blast sans ligne `blasts`
+  // disparaitrait de la liste.
+  for (const code of Object.keys(cartes)) {
+    const d = decoderCarte(code);
+    if (!d || !d.numero) continue;
+    const numBlast = String(d.numero);
+    if (!parPattern[numBlast]) parPattern[numBlast] = [];
+    if (parPattern[numBlast].indexOf(code) < 0) {
+      parPattern[numBlast].push(code);
     }
   }
 
   return corps(true, {
-    blasts: blasts
-      .filter((b) => b.numero !== '' && b.carte !== '')
-      .map((b) => {
-        const code = String(b.carte);
-        const carte = cartes[code] || {};
-        const numBlast = String(b.numero);
-        // `cartes` : liste de codes (un par RL) reelle si les blocs portent
-        // leur `carte`. Sinon legacy : on retombe sur [blasts.carte].
-        const cartesListe = (cartesParBlast[numBlast] && cartesParBlast[numBlast].length)
-          ? cartesParBlast[numBlast]
-          : [code];
-        return {
-          numero: numBlast,
-          // Legacy : on garde `carte` (1ere) pour les clients non migres.
-          carte: cartesListe[0] || code,
-          // Nouveau contrat : liste des cartes (une par RL).
-          cartes: cartesListe,
-          libelle_carte: String(carte.libelle || ''),
-          blocs: blocsParBlast[numBlast] || [],
-          plan_url: baseUrl() + '?action=plan&carte=' + encodeURIComponent(code),
-        };
-      }),
+    blasts: Object.keys(parPattern).sort(comparerNumeros).map((numBlast) => {
+      const declarees = parPattern[numBlast];
+      // Les cartes reellement connues des blocs font foi ; les cartes de
+      // l'onglet `blasts` servent de repli quand `blocs` est vide.
+      const cartesListe = declarees.slice();
+      const code = cartesListe[0];
+      const carte = cartes[code] || {};
+      // Blocs rattaches a leur RL : { carte, blocs: [...] }. Le client sait
+      // ainsi exactement quels blocs appartiennent a quel RL.
+      const blocsParCarte = cartesListe.map((c) => ({
+        carte: c,
+        flitch: (decoderCarte(c) || {}).flitch || '',
+        blocs: (blocsParBlastCarte[numBlast + '||' + c] || []),
+      }));
+      const totalBlocs = blocsParCarte.reduce(
+        (t, e) => t + e.blocs.length, 0);
+      return {
+        numero: numBlast,
+        // Legacy : on garde `carte` (1ere) pour les clients non migres.
+        carte: code,
+        // Liste des cartes (une par RL).
+        cartes: cartesListe,
+        // Blocs regroupes par carte (RL).
+        blocs_par_carte: blocsParCarte,
+        libelle_carte: String(carte.libelle || ''),
+        // Legacy : liste plate (tous les blocs, tous RL confondus).
+        blocs: blocsParBlast[numBlast] || [],
+        nombre_blocs: totalBlocs,
+        plan_url: baseUrl() + '?action=plan&carte=' + encodeURIComponent(code),
+      };
+    }),
   });
 }
 
