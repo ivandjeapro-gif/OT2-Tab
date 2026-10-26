@@ -33,7 +33,8 @@ void main() {
           ),
         ],
         typesDT: const <TypeDT>[
-          TypeDT(code: '1500', ids: <String>['DT-01']),
+          TypeDT(code: '1500', role: 'DT', ids: <String>['1']),
+          TypeDT(code: 'EXCAVATOR', role: 'EXCAVATOR', ids: <String>['1']),
         ],
       );
       await base.appliquerReferentiels(referentiels);
@@ -48,14 +49,14 @@ void main() {
 
       final bool accepte = session.connect(
         selected: excavator,
-        id: 'TAB3-01',
-        name: 'Excavator 01',
+        id: 'EXCAVATOR-1',
+        name: 'EXCAVATOR 01 - EXCAVATOR',
       );
 
       expect(accepte, isTrue);
       expect(session.profile?.code, 'excavator');
-      expect(session.deviceId, 'TAB3-01');
-      expect(session.deviceName, 'Excavator 01');
+      expect(session.deviceId, 'EXCAVATOR-1');
+      expect(session.deviceName, 'EXCAVATOR 01 - EXCAVATOR');
       expect(session.masterConnected, isFalse);
     });
 

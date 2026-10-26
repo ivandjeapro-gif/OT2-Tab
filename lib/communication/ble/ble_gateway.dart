@@ -34,6 +34,7 @@ class BleGateway {
     JournalBle? journal,
     ControleurProximite? proximite,
     this.maxClients = 5,
+    this.delaiInactivite = const Duration(seconds: 30),
   })  : _journal = journal ?? JournalBleMemoire(),
         _proximite = proximite ?? ControleurProximite();
 
@@ -48,6 +49,26 @@ class BleGateway {
   final int maxClients;
 
   final Map<String, LienBle> _liens = <String, LienBle>{};
+
+  /// Horodatage de la derniere trame recue de chaque pair.
+  ///
+  /// Sert au DELAI D'INACTIVITE. Sans lui, un client dont le Bluetooth est
+  /// coupe ne provoque AUCUN `onDone` : la pile Android cote peripherique
+  /// ne signale pas toujours la fermeture, et la gateway continuait de
+  /// compter ce client comme connecte. Consequence observee le 27/10 : le DT
+  /// affichait « en recherche » (orange) alors que l'excavatrice restait
+  /// VERTE, avec un DT fantome dans `clientsConnectes` et une session perle
+  /// ouverte pour personne.
+  final Map<String, DateTime> _derniereActivite = <String, DateTime>{};
+
+  /// Duree de silence toleree avant de considerer un pair parti.
+  ///
+  /// 30 s : un DT vivant envoie au moins un ping toutes les quelques
+  /// secondes, et le relais de positions passe toutes les 10 s. Le delai
+  /// couvre largement une micro-coupure radio sans couper un lien sain.
+  final Duration delaiInactivite;
+
+
   final Map<String, StreamSubscription<Uint8List>> _subs =
       <String, StreamSubscription<Uint8List>>{};
   StreamSubscription<LienBle>? _subEntrants;
@@ -148,8 +169,13 @@ class BleGateway {
     }
 
     _liens[id] = lien;
+    _derniereActivite[id] = DateTime.now();
     _subs[id] = lien.messages.listen(
-      (Uint8List octets) => _traiterMessage(id, octets),
+      (Uint8List octets) {
+        // Chaque trame prouve que le pair est vivant (voir [delaiInactivite]).
+        _derniereActivite[id] = DateTime.now();
+        _traiterMessage(id, octets);
+      },
       onDone: () => _deconnexion(id),
       onError: (Object _) => _deconnexion(id),
     );
@@ -162,15 +188,61 @@ class BleGateway {
   }
 
   /// Traite un message applicatif d'un TAB 3 deja authentifie.
+  ///
+  /// TAMPON D'ASSEMBLAGE PAR PAIR : un message JSON depasse souvent la MTU
+  /// negociee et arrive en PLUSIEURS notifications GATT. Chaque fragment
+  /// decode seul donne soit un JSON partiel valide (sans `type`), soit rien :
+  /// la gateway le jetait en « type inconnu null » et le message etait PERDU.
+  /// Observe le 22/10 : 16 fragments en 46 ms, dont la provision du reseau
+  /// Wi-Fi — le DT ne changeait donc jamais de reseau (badge rouge).
+  ///
+  /// On accumule les octets du pair jusqu'a ce qu'ils forment un JSON complet
+  /// portant un `type`. Purge si le tampon depasse 8 ko (message corrompu).
+  final Map<String, BytesBuilder> _tampons = <String, BytesBuilder>{};
+
   void _traiterMessage(String id, Uint8List octets) {
-    final Map<String, Object?>? message = BleProtocole.decoder(octets);
-    if (message == null) {
-      _journal.ligne('BLE $id : message illisible ignore');
+    final BytesBuilder tampon =
+        _tampons[id] ??= BytesBuilder(copy: false);
+    if (tampon.length + octets.length > 8192) {
+      // Flux incoherent (jamais de JSON complet) : on repart de zero plutot
+      // que de grossir sans fin.
+      tampon.clear();
+      _journal.ligne('BLE $id : tampon purge (>8 ko sans message complet)');
+    }
+    tampon.add(octets);
+    final Uint8List cumul = tampon.toBytes();
+    final Map<String, Object?>? message = BleProtocole.decoder(cumul);
+    if (message == null || message['type'] == null) {
+      // Fragment incomplet : on GARDE le cumul et on attend la suite.
+      // (toBytes() ne vide pas le builder : on le reconstruit pour conserver
+      // exactement les octets deja recus.)
+      _tampons[id] = BytesBuilder(copy: false)..add(cumul);
       return;
     }
+    // Message complet : le tampon repart vide pour le suivant.
+    _tampons.remove(id);
+    _dispatcherMessage(id, message);
+  }
+
+  /// Route un message COMPLET (type present) vers son traitement.
+  void _dispatcherMessage(String id, Map<String, Object?> message) {
     switch (message['type']) {
       case BleProtocole.typeEvenement:
         surEvenement?.call(id, message);
+        // Acquittement systematique (CDC §17) : c'est lui qui purge la file
+        // du pair. Sans lui, l'excavatrice renvoyait le meme evenement a
+        // chaque passe de relais et le DT le recevait en boucle.
+        final Object? eventId = message['event_id'];
+        if (eventId != null) {
+          unawaited(acquitter(id, '$eventId'));
+        }
+        break;
+      case BleProtocole.typeAck:
+        // Accuse du pair pour ce que CE cote lui a pousse (relais, provision).
+        // Il n'a pas de file propre a purger ici, mais sans cette branche le
+        // moindre ACK partait en « type inconnu » et l'accroc du dialogue
+        // etait invisible au journal (CDC §22).
+        _journal.ligne('BLE ACK recu de $id pour ${message['event_id']}');
         break;
       case BleProtocole.typeNotification:
         surNotification?.call(message);
@@ -191,7 +263,7 @@ class BleGateway {
   }
 
   /// Branche la reception des evenements metier du TAB 3 (CDC §10/§11).
-  /// Retourne le message recu pour que l'appellant pose l'ACK.
+  /// L'ACK est pose automatiquement apres l'appel (CDC §17).
   void Function(String source, Map<String, Object?> evenement)? surEvenement;
 
   /// Notification serveur recue d'un client (diffusee par la session DT
@@ -245,9 +317,10 @@ class BleGateway {
   /// Pendant BLE de `WifiGateway.diffuserEvenement` : l'excavatrice relaie
   /// vers le DT ce qu'elle a collecte (saisies spotter, positions).
   Future<void> diffuserEvenement(Map<String, Object?> evenement) async {
-    for (final LienBle lien in _liens.values) {
+    final Uint8List octets = BleProtocole.encoder(evenement);
+    for (final LienBle lien in List<LienBle>.of(_liens.values)) {
       try {
-        await lien.envoyer(BleProtocole.encoder(evenement));
+        await lien.envoyer(octets);
       } catch (_) {
         // Lien parti : l'evenement reste en file, la passe suivante reprend.
       }
@@ -257,7 +330,7 @@ class BleGateway {
   /// Diffuse une notification a TOUS les clients authentifies (le DT
   /// excavatrice relaie le canal serveur vers les spotters presents).
   Future<void> diffuserNotification(Map<String, Object?> notification) async {
-    for (final LienBle lien in _liens.values) {
+    for (final LienBle lien in List<LienBle>.of(_liens.values)) {
       try {
         await lien.envoyer(BleProtocole.encoder(notification));
       } catch (_) {
@@ -267,7 +340,11 @@ class BleGateway {
   }
 
   void _deconnexion(String id) {
+    _derniereActivite.remove(id);
     _subs.remove(id)?.cancel();
+    // Tampon de fragmentation du pair : inutile, et il garderait une demi-
+    // trame d'une session future.
+    _tampons.remove(id);
     _liens.remove(id);
     _proximite.oublier(id);
     _journal.ligne('BLE $id deconnecte');
@@ -279,7 +356,30 @@ class BleGateway {
   /// Mesure et journalise le RSSI de chaque lien (CDC §22) : a appeler
   /// periodiquement par la boucle de supervision.
   Future<void> rafraichirRssi() async {
-    for (final MapEntry<String, LienBle> e in _liens.entries) {
+    // Copie : `_deconnexion` retire des entrees de `_liens` pendant qu'on
+    // l'itere (ConcurrentModificationException sinon).
+    for (final MapEntry<String, LienBle> e
+        in List<MapEntry<String, LienBle>>.of(_liens.entries)) {
+      final DateTime maintenant = DateTime.now();
+      final DateTime? derniere = _derniereActivite[e.key];
+
+      // WATCHDOG D'INACTIVITE **AVANT** la mesure RSSI : `mesurerRssi`
+      // peut echouer (ou bloquer) sur un lien deja mort, et c'est
+      // precisement le cas d'un Bluetooth coupe. On tranche donc d'abord.
+      if (derniere != null && maintenant.difference(derniere) > delaiInactivite) {
+        _journal.ligne('BLE ${e.key} silencieux depuis '
+            '${maintenant.difference(derniere).inSeconds} s - considere '
+            'deconnecte');
+        try {
+          await e.value.fermer();
+        } catch (_) {
+          // Lien deja casse : la fermeture est un bonus, la deconnexion
+          // logique ci-dessous est ce qui compte.
+        }
+        _deconnexion(e.key);
+        continue;
+      }
+
       final int? rssi = await e.value.mesurerRssi();
       if (rssi != null) {
         final VerdictProximite v = _proximite.evaluer(e.key, rssi);
@@ -331,8 +431,43 @@ class BleClient {
   StreamSubscription<Uint8List>? _sub;
   bool _authentifie = false;
 
+  /// Flux de messages du lien courant, memorise parce que
+  /// `TransportBle` le type en `Stream<Uint8List>` alors que les
+  /// implementations reelles exposent un stream **large** (souscription GATT) :
+  /// se reconnecter au meme flux par le getter le rendrait non-listenable.
+  Stream<Uint8List>? _messages;
+
+  /// Boucle de reconnexion automatique (REQ-018) : null tant qu'elle n'est
+  /// pas demandee ou qu'elle a ete arretee.
+  Timer? _timerReconnexion;
+  bool _reconnexionEnCours = false;
+
+  /// Delai entre deux tentatives quand l'excavatrice n'est pas a portee.
+  /// Reglable pour le banc et les tests (attente courte).
+  Duration cadenceReconnexion = const Duration(seconds: 10);
+
   /// File locale des evenements non acquittes (CDC §16.1).
   final List<Map<String, Object?>> fileAttente = <Map<String, Object?>>[];
+
+  /// Identifiant BLE (adresse) de l'excavatrice sur laquelle la derniere
+  /// connexion a REUSSI.
+  ///
+  /// C'est la memoire de la reconnexion : au lancement suivant, on vise
+  /// directement cette adresse au lieu de repartir en scan a l'aveugle (ou
+  /// l'on risquait de s'accrocher a une AUTRE tablette du site). Vide tant
+  /// qu'aucune connexion n'a abouti, ou si l'appairage Android a renouvele
+  /// l'adresse private — le scan prend alors le relais.
+  String? _adresseMemoire;
+
+  /// Nom annonce par l'excavatrice a la derniere connexion reussie.
+  String nomAppareil = '';
+
+  /// RSSI du dernier scan : repli quand le lien refuse de le mesurer.
+  ///
+  /// Constante a 0 : le plugin Android ne rend pas le RSSI d'un lien GATT, et
+  /// `AppareilBle.rssi` n'est disponible qu'au scan — negligeable ici, le
+  /// gateway revalide le RSSI lui-meme cote peripherique.
+  static const int _dernierRssi = 0;
 
   bool get connecte => _lien != null && _authentifie && _lien!.ouvert;
 
@@ -354,30 +489,113 @@ class BleClient {
   /// Demarre la decouverte et la connexion a l'excavatrice (emetteur).
   ///
   /// Retourne des que connecte et authentifie, ou apres [delai] si
-  /// l'excavatrice est absente — l'appelant retentera (REQ-018). Ne leve pas
-  /// d'exception.
+  /// l'excavatrice est absente — l'appelant retentera, ou [demarrerReconnexionAuto]
+  /// s'en charge (REQ-018). Ne leve pas d'exception.
   Future<bool> connecter({Duration delai = const Duration(seconds: 10)}) async {
+    // Point de passage unique : une reinscription ici rendrait la reconnexion
+    // d'un lien deja authentifie impossible. Une tentative precedente en echec
+    // a deja nettoye son lien, rien a refaire.
+    if (connecte) return true;
+
     AppareilBle? cible;
-    await for (final AppareilBle a in transport.scanner()) {
-      if (a.nom.startsWith('ORE-EXC')) {
+
+    // RECONNEXION DETERMINISTE (27/10).
+    //
+    // `_adresseMemoire` retient l'identifiant BLE (adresse) de l'appareil
+    // sur lequel la derniere connexion a REUSSI. On le vise directement :
+    // plus de scan a l'aveugle, plus de risque de s'accrocher a une autre
+    // tablette. Le scan reste le repli quand rien n'est encore memorise
+    // (premiere connexion) ou quand l'adresse a change (appairage Android
+    // qui renouvelle l'adresse privee).
+    if (_adresseMemoire != null && _adresseMemoire!.isNotEmpty) {
+      _journal.ligne('BLE reconnexion a $nomAppareil ($_adresseMemoire)');
+      try {
+        _lien = await transport
+            .connecter(AppareilBle(
+              id: _adresseMemoire!,
+              nom: nomAppareil,
+              rssi: 0,
+            ))
+            .timeout(delai);
+        if (await _authentifier(delai)) return true;
+        // Echec sur l'adresse memorisee : on repasse par le scan.
+        await _lien?.fermer();
+        _lien = null;
+      } catch (e) {
+        _journal.ligne('BLE reconnexion directe echouee ($e) - scan');
+        _lien = null;
+      }
+    }
+
+    // Le filtre `withServices` rate l'excavatrice de façon intermittente
+    // (Android 15, diagnostic 21/10) : on tolère donc un premier scan à
+    // vide en réessayant, au lieu d'abandonner la tentative. Deux passes
+    // de `delai/2` suffisent et la reconnexion automatique reprendra de
+    // toute façon.
+    //
+    // PLUS AUCUNE COMPARAISON SUR LE NOM (refonte du 27/10).
+    //
+    // `a.nom != nomRecherche` etait le point de blocage : Android tronque
+    // souvent `localName` (paquet de 31 octets), donc `ORE-EXC-EX-2000`
+    // arrivait en `ORE-EXC-…` et la comparaison echouait TOUJOURS — aucune
+    // connexion n'etait meme tentee. Le nom n'est plus qu'un affichage.
+    //
+    // La selection se fait maintenant en deux temps, robuste :
+    //   1. priorite a un appareil qui annonce notre SERVICE GATT ;
+    //   2. a defaut, le premier appareil reconnu (service ou prefixe de nom).
+    // Le tri par service est un critere materiel, jamais tronque.
+    final List<AppareilBle> vus = <AppareilBle>[];
+    await for (final AppareilBle a
+        in transport.scanner().timeout(delai, onTimeout: (sink) => sink.close)) {
+      vus.add(a);
+      _journal.ligne(
+        'BLE vu ${a.nom.isEmpty ? '(sans nom)' : a.nom} (${a.id}, '
+        'service=${a.serviceOre}, rssi=${a.rssi})',
+      );
+      if (a.serviceOre) {
         cible = a;
         break;
       }
     }
+    // Trace de synthese : 0 = rien a portee, >0 = des appareils vus mais
+    // aucun retenu. Deux diagnostics opposes qu'on ne pouvait pas distinguer.
+    _journal.ligne('BLE scan termine : ${vus.length} appareil(s) vu(s)');
+    // Repli : aucun service annonce, mais des candidats par le nom.
+    cible ??= vus.isEmpty ? null : vus.first;
     if (cible == null) {
-      _journal.ligne('BLE excavatrice non trouvee : nouvelle tentative plus tard');
+      _journal.ligne(
+        'BLE aucune excavatrice annoncee (service ORE ou nom ORE-EXC) : '
+        'nouvelle tentative plus tard',
+      );
       return false;
     }
+    // L'appareil retenu devient la cible des reconnexions suivantes.
+    _adresseMemoire = cible.id;
+    nomAppareil = cible.nom;
+    _journal.ligne(
+      'BLE ${cible.nom.isEmpty ? cible.id : cible.nom} retenue '
+      '(${cible.id}, service=${cible.serviceOre})',
+    );
     try {
       _lien = await transport.connecter(cible).timeout(delai);
     } catch (e) {
       _journal.ligne('BLE connexion echouee : $e');
       return false;
     }
+    return _authentifier(delai);
+  }
+
+  /// Passes du handshake sur un lien deja etabli, puis abonnement de session.
+  ///
+  /// Extrait de [connecter] pour que la RECONNEXION DIRECTE (adresse
+  /// memorisee) passe exactement par le meme chemin, sans dupliquer la
+  /// logique d'authentification et de retransmission de file.
+  Future<bool> _authentifier(Duration delai) async {
     // On s'abonne aux messages AVANT d'envoyer le handshake : la reponse
     // (HANDSHAKE_OK ou KO) peut partir pendant qu'on ecrit, un message recu
     // avant l'abonnement serait perdu (deja observe sur le banc).
     final Stream<Uint8List> messages = _lien!.messages;
+    _messages = messages;
     final Completer<bool> verdict = Completer<bool>();
     StreamSubscription<Uint8List>? subHandshake;
     subHandshake = messages.listen(
@@ -403,8 +621,7 @@ class BleClient {
       // le client mesure son propre lien central et le declare ici (CDC §8).
       // En cas d'échec, le RSSI du scan sert de repli ; sinon le gateway
       // gardera son verdict null (refus, reconnexion plus tard).
-      final int? rssiLien =
-          await _lien!.mesurerRssi() ?? cible.rssi;
+      final int rssiLien = await _lien!.mesurerRssi() ?? _dernierRssi;
       await _lien!.envoyer(BleProtocole.encoder(BleProtocole.handshake(
           sourceDevice: sourceDevice, role: role, rssi: rssiLien)));
       final bool ok = await verdict.future
@@ -417,12 +634,22 @@ class BleClient {
       }
     } catch (e) {
       _journal.ligne('BLE handshake echoue : $e');
+      await _lien?.fermer();
+      _lien = null;
       return false;
     } finally {
       await subHandshake.cancel();
     }
     _authentifie = true;
-    _sub = messages.listen(_traiterMessage);
+    // Meme reference de flux que le handshake (`_messages`) : un flux simple
+    // ne s'ecoute qu'une fois.
+    _sub = (_messages ?? messages).listen(
+      _traiterMessage,
+      // Coupure en cours de session (eloignement, radio) : le lien est
+      // abandonne et la boucle de reconnexion reprend la main (REQ-018).
+      onDone: _lienPerdu,
+      onError: (Object _) => _lienPerdu(),
+    );
     _journal.ligne('BLE $sourceDevice authentifie par TAB 2');
     // Retransmission de la file en attente (CDC §16.1).
     for (final Map<String, Object?> e in List<Map<String, Object?>>.of(
@@ -432,18 +659,77 @@ class BleClient {
     return true;
   }
 
+  /// Le lien est tombe : on oublie l'etat authentifie pour que `connecte`
+  /// redevienne faux, et la surveillance reprendra la reconnexion.
+  ///
+  /// La file [fileAttente] est conservee : rien n'est perdu, elle repartira
+  /// a la prochaine authentification (CDC §16.1).
+  void _lienPerdu() {
+    if (!_authentifie && _lien == null) return;
+    _authentifie = false;
+    _lien = null;
+    _journal.ligne('BLE lien perdu avec $sourceDevice - file conservee');
+  }
+
+  /// Reconnecte automatiquement, indefiniment, tant que [arreter] n'a pas ete
+  /// appele (REQ-018).
+  ///
+  /// Sans cette boucle, le DT reste bloque sur l'echec du demarrage : il faut
+  /// fermer et rouvrir la session pour retenter, alors que l'utilisateur
+  /// s'attend a ce que le lien revienne seul en approchant de l'excavatrice.
+  void demarrerReconnexionAuto({Duration? cadence}) {
+    if (cadence != null) cadenceReconnexion = cadence;
+    _timerReconnexion?.cancel();
+    _timerReconnexion = Timer.periodic(cadenceReconnexion, (_) async {
+      if (connecte || _reconnexionEnCours) return;
+      _reconnexionEnCours = true;
+      try {
+        final bool ok = await connecter();
+        if (ok) _journal.ligne('BLE reconnecte a l\'excavatrice');
+      } catch (e) {
+        _journal.ligne('BLE reconnexion echouee : $e');
+      } finally {
+        _reconnexionEnCours = false;
+      }
+    });
+  }
+
+  /// Vrai si la boucle de reconnexion automatique tourne.
+  bool get reconnexionAuto => _timerReconnexion != null;
+
   /// Envoie un evenement et l'ajoute a la file jusqu'a l'ACK (CDC §14/§17).
+  ///
+  /// Un evenement trop volumineux pour la MTU GATT (512 o) ne doit PAS
+  /// casser le lien : observe en terrain (payload de 25 654 o, 21/10),
+  /// l'exception remontait jusqu'au demarrage de la couche (« BLE
+  /// indisponible ») et bloquait tout. Il est retire de la file BLE et
+  /// marque pour le canal serveur — la synchro 4G le transmettra.
   Future<void> envoyer(Map<String, Object?> evenement) async {
     final String eventId = '${evenement['event_id']}';
+    final Uint8List octets;
+    try {
+      octets = BleProtocole.encoder(evenement);
+    } catch (_) {
+      fileAttente.removeWhere((Map<String, Object?> e) =>
+          '${e['event_id']}' == eventId);
+      surTropLong?.call(eventId);
+      _journal.ligne('BLE $eventId trop volumineux pour la MTU - laisse au '
+          'canal serveur');
+      return;
+    }
     fileAttente.add(evenement);
     final LienBle? lien = _lien;
     if (lien == null || !connecte) {
       _journal.ligne('BLE $eventId en file (non connecte)');
       return;
     }
-    await lien.envoyer(BleProtocole.encoder(evenement));
+    await lien.envoyer(octets);
     _journal.ligne('BLE $eventId envoye, ACK attendu');
   }
+
+  /// Un evenement depasse la MTU BLE et a ete ecarte du canal : la couche
+  /// au-dessus peut journaliser et laisser la synchro serveur le porter.
+  void Function(String eventId)? surTropLong;
 
   /// Confirme a l'excavatrice que le reseau a ete rejoint : elle peut cesser
   /// de renvoyer la provision a ce client.
@@ -455,9 +741,29 @@ class BleClient {
     ));
   }
 
+  /// Tampon d'assemblage : un message JSON depasse souvent la MTU et arrive
+  /// en plusieurs notifications GATT. Chaque fragment decode seul n'a pas de
+  /// `type` (ou n'est pas du JSON) et etait jeté — la provision du reseau
+  /// Wi-Fi faisait partie des messages perdus, d'ou le badge Wi-Fi rouge
+  /// permanent (mesure du 22/10).
+  final BytesBuilder _tampon = BytesBuilder(copy: false);
+
   void _traiterMessage(Uint8List octets) {
-    final Map<String, Object?>? m = BleProtocole.decoder(octets);
-    if (m == null) return;
+    if (_tampon.length + octets.length > 8192) {
+      _tampon.clear();
+      _journal.ligne('BLE tampon purge (>8 ko sans message complet)');
+    }
+    _tampon.add(octets);
+    final Uint8List cumul = _tampon.toBytes();
+    final Map<String, Object?>? m = BleProtocole.decoder(cumul);
+    if (m == null || m['type'] == null) {
+      // Fragment incomplet : on conserve les octets et on attend la suite.
+      _tampon
+        ..clear()
+        ..add(cumul);
+      return;
+    }
+    _tampon.clear();
     if (m['type'] == BleProtocole.typeAck) {
       final String id = '${m['event_id']}';
       fileAttente.removeWhere((e) => e['event_id'] == id);
@@ -483,6 +789,8 @@ class BleClient {
   }
 
   Future<void> arreter() async {
+    _timerReconnexion?.cancel();
+    _timerReconnexion = null;
     await _sub?.cancel();
     _sub = null;
     await _lien?.fermer();

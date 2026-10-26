@@ -41,19 +41,14 @@ Map<String, Object?> snapshotJson() => <String, Object?>{
       ],
       'equipements': <Map<String, Object?>>[
         <String, Object?>{
-          'profil': 'dt', 'id': '01', 'nom': 'DT 01', 'actif': 1,
-        },
-        <String, Object?>{
-          'profil': 'excavator', 'id': '02', 'nom': 'Excavatrice 02', 'actif': 1,
-        },
-        <String, Object?>{
           'profil': 'spotter', 'id': '03', 'nom': 'Spotter 03', 'actif': 1,
         },
       ],
       'dts': <Map<String, Object?>>[
-        <String, Object?>{'type': '1500', 'id': '01', 'actif': 1},
-        <String, Object?>{'type': '1500', 'id': '08', 'actif': 1},
-        <String, Object?>{'type': '785', 'id': '09', 'actif': 1},
+        <String, Object?>{'role': 'DT', 'type': '1500', 'id': '01', 'actif': 1},
+        <String, Object?>{'role': 'DT', 'type': '1500', 'id': '08', 'actif': 1},
+        <String, Object?>{'role': 'DT', 'type': '785', 'id': '09', 'actif': 1},
+        <String, Object?>{'role': 'EXCAVATOR', 'type': 'EXCAVATOR', 'id': '02', 'actif': 1},
       ],
     };
 
@@ -65,9 +60,11 @@ void main() {
 
       expect(data.profils.map((p) => p.code), <String>['dt', 'excavator', 'spotter']);
       expect(data.profils[1].libelle, 'Excavatrice');
-      expect(data.equipements.first.id, '01');
-      expect(data.equipements.first.nom, 'DT 01');
-      expect(data.typesDT.map((t) => t.code), <String>['1500', '785']);
+      // Serveur final : `equipements` ne porte plus que des personnes — le
+      // premier element est donc le spotter.
+      expect(data.equipements.first.id, '03');
+      expect(data.equipements.first.nom, 'Spotter 03');
+      expect(data.typesDT.map((t) => t.code), <String>['1500', '785', 'EXCAVATOR']);
       expect(data.typesDT.first.ids, <String>['01', '08']);
     });
 
@@ -140,12 +137,15 @@ void main() {
 
       await sync.unePasseReferentiels();
       expect(base.profils.map((p) => p.code), contains('spotter'));
-      expect(base.idsDuProfil(base.profil('dt')!), contains('01'));
+      // Serveur final : le menu DT derive de la FLOTTE, identifiant compose
+      // famille-numero (cle des equipements ; le menu 2 l'affiche tronque en
+      // numero seul, mais le stockage garde le compose).
+      expect(base.idsDuProfil(base.profil('dt')!), contains('1500-01'));
       expect(base.idsDuType('1500'), <String>['01', '08']);
 
       tx.referentiels = null;
       await sync.unePasseReferentiels();
-      expect(base.idsDuProfil(base.profil('dt')!), contains('01'));
+      expect(base.idsDuProfil(base.profil('dt')!), contains('1500-01'));
       expect(base.idsDuType('1500'), <String>['01', '08']);
     });
   });

@@ -219,3 +219,98 @@ Comportement :
 - le worker appelle cet endpoint **à chaque passe** (`Synchronisation.
   unePasseAffectation`), uniquement quand `reseauDisponible == true` ;
 - un contenu inchangé entre deux passes n'est pas notifié.
+
+## 9. Plans / Maps — miroir du dossier Drive
+
+Les plans (Maps) de chaque carte vivent dans **un dossier Google Drive**. La
+tablette doit refléter exactement ce dossier : ce qui y est présent est
+téléchargé, ce qui n'y est plus est supprimé localement. C'est une
+synchronisation **complète** (aucune notion d'incrémental) exécutée à chaque
+passe du worker.
+
+Dossier de référence :
+
+```
+https://drive.google.com/drive/folders/1nOTs7uWhbtQb3XeZ9vhDRMFBB837KJ2B
+```
+
+### 9.1 Endpoint
+
+```
+GET {api_base}?action=plans&token={api_token}
+```
+
+**Réponse `200 OK`**
+
+```json
+{
+  "ok": true,
+  "plans": [
+    {
+      "carte": "232.5_OM_LWP2_235_230_106_3",
+      "id": "1ZniDWD0LLmo8N8YsFKLq370-I7AlxSFE",
+      "nom": "232.5_OM_LWP2_235_230_106_3.gif"
+    }
+  ]
+}
+```
+
+| Champ | Obligatoire | Rôle |
+| --- | --- | --- |
+| `ok` | oui | `true` = inventaire complet et exploitable. `false` = refus : le client **ne touche à rien** |
+| `plans` | oui | liste **exhaustive** des fichiers du dossier |
+| `plans[].id` | oui | identifiant Drive du fichier (clé stable) |
+| `plans[].carte` | non | code de carte ; si absent, déduit du `nom` (sans extension, sans préfixe `plan_`) |
+| `plans[].nom` | non | nom du fichier dans le Drive, pour le diagnostic |
+
+Variantes de nommage acceptées pour l'identifiant : `id`, `plan_id`,
+`drive_id`, `file_id` — ou une `url` Drive dont l'ID est extrait.
+
+### 9.2 Téléchargement d'un plan
+
+Le client n'utilise **pas** `?action=plan`. Il construit directement :
+
+```
+https://drive.google.com/uc?export=download&confirm=t&id={plans[].id}
+```
+
+Une seule requête, aucune recherche par nom, aucun passage par Apps Script.
+Vérifié le 26/10 : `…&id=1ZniDWD0LLmo8N8YsFKLq370-I7AlxSFE` rend un GIF de
+61 311 octets.
+
+Le corps doit commencer par une signature d'image (JPEG `FF D8 FF`, PNG
+`89 50 4E 47`, GIF `47 49 46`, WebP `RIFF…WEBP`, BMP `BM`). Tout autre corps
+— notamment le JSON `{"ok":false,…}` d'un refus — est rejeté et **jamais**
+écrit sur le disque.
+
+### 9.3 Traitement côté client
+
+| Réponse de `?action=plans` | Traitement |
+| --- | --- |
+| `ok:true` + liste | téléchargement des cartes absentes localement, puis **purge** des fichiers dont la carte n'est plus dans la liste |
+| `ok:true` + liste vide | le Drive est vide ⇒ purge complète des plans locaux |
+| `ok:false` | aucune modification (refus serveur) |
+| 4xx / 5xx / réseau / timeout | aucune modification : une panne ne vide jamais la tablette |
+| action non servie (404, `ok:false`) | aucune modification ; le client se rabat sur `plan_url` des blasts |
+
+Règles de garde :
+
+- un téléchargement en échec **ne supprime pas** le fichier déjà présent : il
+  sera retenté à la passe suivante ;
+- la purge retire aussi l'identifiant Drive et l'URL associés à la carte, pour
+  qu'aucun téléchargement ne reparte vers un fichier disparu ;
+- un fichier déjà présent localement n'est pas re-téléchargé (le nom local suit
+  le code de carte : `plan_{carte}.{ext}`) ;
+- les plans corrompus hérités d'anciennes versions (JSON écrit en `.jpg`) sont
+  détectés par leur signature binaire et supprimés au démarrage.
+
+### 9.4 Déploiement serveur attendu
+
+Dans `server_OT`, l'action `plans` doit :
+
+1. lister les fichiers du dossier `1nOTs7uWhbtQb3XeZ9vhDRMFBB837KJ2B` ;
+2. rendre pour chacun son identifiant Drive et son nom ;
+3. répondre `{"ok":true,"plans":[…]}` — **liste exhaustive**, y compris vide.
+
+L'action `plan` (téléchargement par nom) devient inutile ; elle peut rester en
+place, le client ne l'appelle plus qu'en dernier recours (anciens serveurs).

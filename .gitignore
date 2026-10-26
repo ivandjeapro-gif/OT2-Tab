@@ -46,3 +46,63 @@ app.*.map.json
 
 # Jetons API locaux (secret partage tablette/serveur)
 /Token
+
+# ============================================================
+#  Artefacts de diagnostic et d'outillage local
+# ============================================================
+# Pendant les sessions de terrain, des dizaines de fichiers temporaires
+# s'accumulent a la racine : captures d'ecran, journaux de build, bases
+# SQLite extraites des tablettes. Aucun n'a sa place dans le depot.
+
+# Captures d'ecran de diagnostic a la RACINE uniquement (a1.png, cc3.png,
+# b4.png...). Les designs, logos et icones deja versionnes restent suivis :
+# un motif global (*.png) les aurait tous sortis du depot.
+/*.png
+/*.jpg
+/*.jpeg
+
+# Journaux de build / logs de session
+build_*.txt
+test_log*.txt
+server_final_ref.txt
+*.log
+
+# Bases SQLite extraites des tablettes (donnees de terrain !)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+tool/*.b64
+
+# Dumps et captures d'interface Android
+*.xml
+u_*.xml
+d_*.xml
+e_*.xml
+
+# Outils jetables : seul le code applicatif est versionne
+/tool/
+
+# Repertoires d'agents / IDE
+/.agents/
+/.claude/
+/.kilo/
+/everything-claude-code/
+/agent/
+/captures/
+
+# APK recuperes ou construits localement
+*.apk
+pulled.apk
+
+# Rapports de build Android
+/android/build/
+
+# Donnees brutes de diagnostic GNSS et captures de terrain
+/test/GNSS/
+/test/*.jpeg
+/test/*.png
+
+# Scripts jetables ponctuels
+patch_*.py
+patch_*.ps1
