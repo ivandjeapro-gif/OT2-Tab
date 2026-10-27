@@ -8,6 +8,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 /**
@@ -35,6 +36,9 @@ class MainActivity : FlutterActivity() {
     private companion object { const val TAG = "OreMainActivity" }
 
     private var wifiDirect: WifiDirectManager? = null
+
+    /// Client BLE natif : autoConnect + persistance du pairing.
+    private var bleCentral: BleCentralManager? = null
     private var hotspot: HotspotManager? = null
     private var wifiClient: WifiClientManager? = null
     private var routeReseau: RouteReseau? = null
@@ -394,6 +398,69 @@ class MainActivity : FlutterActivity() {
                     else -> resultat.notImplemented()
                 }
             }
+
+        // ─── CLIENT BLE NATIF : autoConnect + persistance du pairing ─────
+        //
+        // `flutter_reactive_ble` ne sait pas faire `connectGatt(…, true, …)` :
+        // Android ne garde alors aucune demande en attente, et la reconnexion
+        // depend d'un scan applicatif. Ce canal delegue la surveillance au
+        // SYSTEME, qui reconnecte des que l'appareil redevient visible.
+        bleCentral = BleCentralManager(applicationContext)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "oret/ble_central")
+            .setMethodCallHandler { appel, resultat ->
+                val g = bleCentral
+                if (g == null) {
+                    resultat.success(mapOf("ok" to false, "erreur" to "gestionnaire absent"))
+                    return@setMethodCallHandler
+                }
+                when (appel.method) {
+                    "etat" -> resultat.success(g.etatPile())
+                    "connecter_direct" -> g.connecterDirect(resultat)
+                    "connecter" -> {
+                        val adresse = appel.argument<String>("adresse") ?: ""
+                        val nom = appel.argument<String>("nom") ?: ""
+                        g.connecter(adresse, nom, resultat)
+                    }
+                    "scanner" -> {
+                        val duree = (appel.argument<Int>("dureeMs") ?: 8000).toLong()
+                        g.scanner(duree, resultat)
+                    }
+                    "ecrire" -> {
+                        val octets = appel.argument<ByteArray>("octets")
+                        if (octets == null) {
+                            resultat.success(mapOf("ok" to false, "erreur" to "octets absents"))
+                        } else {
+                            g.ecrire(octets, resultat)
+                        }
+                    }
+                    "memoriser" -> {
+                        g.memoriser(
+                            appel.argument<String>("adresse") ?: "",
+                            appel.argument<String>("nom") ?: "",
+                        )
+                        resultat.success(mapOf("ok" to true))
+                    }
+                    "oublier" -> {
+                        g.oublier()
+                        resultat.success(mapOf("ok" to true))
+                    }
+                    "deconnecter" -> {
+                        g.deconnecter(appel.argument<Boolean>("oublier") == true)
+                        resultat.success(mapOf("ok" to true))
+                    }
+                    else -> resultat.notImplemented()
+                }
+            }
+        // Flux : etats de connexion, appareils vus, octets recus.
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "oret/ble_central_events")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, sink: EventChannel.EventSink?) {
+                    bleCentral?.brancherFlux(sink)
+                }
+                override fun onCancel(arguments: Any?) {
+                    bleCentral?.brancherFlux(null)
+                }
+            })
 
         // Diagnostic terrain BLE (`tool/diag_ble_main.dart`) : les extras
         // d'intent ne sont pas visibles depuis Dart, on les relaie ici.

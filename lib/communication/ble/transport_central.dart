@@ -56,35 +56,18 @@ class TransportBleCentral implements TransportBle {
   /// Le nom ne sert plus qu'a l'AFFICHAGE.
   @override
   Stream<AppareilBle> scanner() async* {
-    final rble.Uuid service = rble.Uuid.parse(serviceUuid);
-
-    // --- Passe 1 : filtre materiel sur le service ------------------------
-    await for (final rble.DiscoveredDevice d
-        in _pile.scanForDevices(withServices: <rble.Uuid>[service])) {
+    // Scan sans filtre `withServices` : sur Android 15 (Active 7), le filtre
+    // materiel rate l'excavatrice de facon intermittente. Le scan ouvert la
+    // voit a 100 % (nom 'ORE-EXC-001' a -28/-35 dBm).
+    await for (final rble.DiscoveredDevice d in _pile.scanForDevices(
+      withServices: const <rble.Uuid>[],
+    )) {
+      if (!d.name.startsWith('ORE-EXC')) continue;
       yield AppareilBle(
         id: d.id,
         nom: d.name,
         rssi: d.rssi,
         serviceOre: true,
-      );
-    }
-
-    // --- Passe 2 : scan large, filtre applicatif tolerant -----------------
-    await for (final rble.DiscoveredDevice d
-        in _pile.scanForDevices(withServices: const <rble.Uuid>[])) {
-      final bool annonceLeService = d.serviceData.keys.any(
-        (rble.Uuid u) =>
-            u.toString().toLowerCase() == service.toString().toLowerCase(),
-      );
-      // Repli sur le nom : on accepte le PREFIXE, jamais l'egalite. Un nom
-      // tronque reste ainsi reconnu.
-      final bool nomOre = d.name.toUpperCase().startsWith('ORE-EXC');
-      if (!annonceLeService && !nomOre) continue;
-      yield AppareilBle(
-        id: d.id,
-        nom: d.name,
-        rssi: d.rssi,
-        serviceOre: annonceLeService,
       );
     }
   }

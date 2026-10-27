@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:ble_peripheral/ble_peripheral.dart' as periph;
 import 'package:flutter/foundation.dart';
 
@@ -25,44 +24,21 @@ import 'transport_ble.dart';
 ///   pile Android, que le handshake complete par l'id applicatif.
 class TransportBlePeripherique implements TransportBle {
   TransportBlePeripherique({
-    // Inversion des roles (Voie 1) : c'est l'EXCAVATRICE qui emet, les DT
-    // s'y accrochent. Le nom annonce distingue donc l'emetteur.
-    // Nom d'advertising : TOUJOURS prefixe `ORE-EXC`, mais UNIQUE par
-    // excavatrice (voir [nomAdvertise]). Le suffixe par defaut n'est qu'un
-    // repli quand l'appelant ne fournit pas d'identifiant.
+    // Nom d'advertising FIXE et STANDARD : 'ORE-EXC-001'.
+    //
+    // Constat du 27/10 : personnaliser ce nom ('ORE-EXC-HYUNDAI-32') cassait
+    // l'advertising sur Android (nom trop long dans le paquet de 31 octets,
+    // rejete ou tronque par la pile) et le scan des DT ne trouvait plus rien.
+    // L'identite REELLE de l'engin (ex. HYUNDAI-32) voyage dans le HANDSHAKE
+    // applicatif (`source_device`), pas dans le nom radio.
     this.nomPublic = 'ORE-EXC-001',
     this.serviceUuid = uuidService,
     this.caracteristiqueRx = uuidCaracteristiqueRx,
     this.caracteristiqueTx = uuidCaracteristiqueTx,
   });
 
-  /// Nom d'advertising construit a partir de l'identifiant de l'excavatrice.
-  ///
-  /// POURQUOI PAS UN NOM FIXE (constat du 27/10) : toutes les tablettes
-  /// s'annoncaient `ORE-EXC-001`. Deux excavatrices dans la meme zone
-  /// devenaient donc INDISTINGUABLES pour le scan, et un DT pouvait se
-  /// connecter a la mauvaise — ou echouer a se reconnecter a la sienne.
-  ///
-  /// Le prefixe `ORE-EXC` est conserve : c'est le seul contrat de decouverte
-  /// du client ([TransportBleCentral.scanner]). Le suffixe, lui, identifie
-  /// l'engin (`ORE-EXC-EX-2000`, `ORE-EXC-PC-3000`...).
-  ///
-  /// La longueur est bornee a 26 octets utiles (limite des donnees
-  /// d'advertising BLE) et les caracteres sont restreints a l'alphanumerique
-  /// et au tiret, seuls acceptes par la pile dans un nom annonce.
-  static String nomAdvertise(String identifiant) {
-    final String propre = identifiant
-        .trim()
-        .toUpperCase()
-        .replaceAll(RegExp(r'[^A-Z0-9-]'), '-')
-        .replaceAll(RegExp(r'-+'), '-');
-    if (propre.isEmpty) return 'ORE-EXC-001';
-    const String prefixe = 'ORE-EXC-';
-    final int place = 26 - prefixe.length;
-    final String suffixe =
-        propre.length > place ? propre.substring(0, place) : propre;
-    return '$prefixe$suffixe';
-  }
+  /// Nom d'advertising fixe annonce par toute excavatrice.
+  static String nomAdvertise(String _) => 'ORE-EXC-001';
 
   /// UUID du service ORE TRACKING (arbitraire mais fixe : les deux côtés
   /// doivent convenir des mêmes).
@@ -166,25 +142,16 @@ class TransportBlePeripherique implements TransportBle {
   /// Démarre l'advertising : c'est ce qui rend TAB 2 visible des TAB 3.
   Future<void> demarrerPublicite() async {
     await preparer();
-    // Nom d'advertising reellement annonce (journalise par la session, qui
-    // le rend visible dans la supervision : sans cela, deux tablettes qui
-    // s'annoncent pareil restent indiagnosticables sur le terrain).
+    // Le paquet BLE legacy (1M PHY) est strictement limite a 31 octets.
+    // L'UUID 128 bits prend deja 18 octets (1 len + 1 type + 16 data),
+    // les flags prennent 3 octets -> il ne reste que 10 octets !
+    // Si on ajoute des manufacturerData en plus, le paquet depasse 31 octets
+    // et Android renvoie ADVERTISE_FAILED_DATA_TOO_LARGE en silence.
+    // On ne met donc QUE le serviceUuid et le localName : c'est ce qui
+    // garantit que l'advertising demarre toujours sans erreur.
     await periph.BlePeripheral.startAdvertising(
       services: <String>[serviceUuid],
       localName: nomPublic,
-      // L'identité ORE TRACKING est dupliquée en données fabricant, dans la
-      // trame PRINCIPALE (pas la SCAN_RSP) : le filtre `withServices` du
-      // central la rate intermittemment (Android 15), alors que les octets
-      // fabricant du paquet principal sont lus à chaque advertisement.
-      //
-      // On y met le NOM COMPLET (et non le seul prefixe) : certains adaptateurs
-      // tronquent `localName` a 8-10 octets, et deux excavatrices redevenaient
-      // alors identiques (« ORE-EXC-… »). Le suffixe permet au client de
-      // reconnaitre son engin meme dans ce cas.
-      manufacturerData: periph.ManufacturerData(
-        manufacturerId: 0xFFF0,
-        data: Uint8List.fromList(utf8.encode(nomPublic)),
-      ),
     );
   }
 

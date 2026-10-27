@@ -11,6 +11,7 @@ import '../communication/ble/ble_protocole.dart';
 import '../communication/ble/permissions_ble.dart';
 import '../communication/ble/transport_ble.dart';
 import '../communication/ble/transport_central.dart';
+import '../communication/ble/transport_natif.dart';
 import '../communication/ble/transport_peripherique.dart';
 import '../communication/position/service_position.dart';
 import '../communication/alertes/alerter.dart';
@@ -201,6 +202,17 @@ class Session extends ChangeNotifier {
   /// Abonnement au flux de maintien : position republiee a cadence fixe,
   /// pour que la moyenne de perle tourne meme a l'arret.
   StreamSubscription<PositionTerrain>? _subMaintien;
+
+  /// Transport BLE natif (autoConnect), cree une fois et reutilise.
+  ///
+  /// On le garde en champ pour que la machine d'etat conserve son appairage
+  /// et son lien entre deux appels a `demarrerCouchesLocales` (Parametres,
+  /// reconnexions). Le recreer a chaque passage perdrait l'adresse memorisee
+  /// et remettrait la pile GATT a zero.
+  late final TransportBleNatif _transportNatif = TransportBleNatif();
+
+  /// Transport BLE natif expose a l'interface (etat, appairage).
+  TransportBleNatif get transportNatif => _transportNatif;
 
   StreamSubscription<PositionTerrain>? _subMesures;
 
@@ -1700,10 +1712,13 @@ feederPerle(mesure);
     // apres une coupure. Le nom derive maintenant de l'identifiant enrole
     // (`EX-2000` -> `ORE-EXC-EX-2000`), le prefixe `ORE-EXC` restant le
     // contrat de decouverte du client.
+    // Restauration du transport eprouve (27/10) :
+    // - Excavatrice : `TransportBlePeripherique()` sous le nom standard
+    //   'ORE-EXC-001' (le nom dynamique cassait l'advertising BLE).
+    // - DT / client : `TransportBleCentral()` (flutter_reactive_ble), qui
+    //   scanne ouvertement et s'accroche a 'ORE-EXC-001'.
     transport ??= estExcavatrice
-        ? TransportBlePeripherique(
-            nomPublic: TransportBlePeripherique.nomAdvertise(identiteReseau),
-          )
+        ? TransportBlePeripherique()
         : TransportBleCentral();
     if (estDt) {
       // DT : client BLE, il se connecte a l'excavatrice presente dans son rayon.
@@ -1782,6 +1797,18 @@ feederPerle(mesure);
       if (!_actif) {
         await client.arreter();
         return;
+      }
+      // APPAIRAGE APPLICATIF — seulement APRES un handshake REUSSI.
+      //
+      // Memoriser une adresse qui n'a pas abouti ferait viser pour toujours
+      // un appareil inutilisable (non enrole, hors service). C'est la regle de
+      // la specification : le natif ne memorise rien de lui-meme sur ce chemin.
+      if (ok && transport is TransportBleNatif) {
+        final TransportBleNatif natif = transport;
+        final String adresse = natif.machine.adresse ?? '';
+        if (adresse.isNotEmpty) {
+          await natif.machine.memoriser(adresse, natif.machine.nom);
+        }
       }
       push(ok
           ? 'BLE connectÃ© Ã  l\'excavatrice - authentifiÃ©'

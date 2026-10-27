@@ -651,6 +651,7 @@ class BleClient {
       onError: (Object _) => _lienPerdu(),
     );
     _journal.ligne('BLE $sourceDevice authentifie par TAB 2');
+    _demarrerBattement();
     // Retransmission de la file en attente (CDC §16.1).
     for (final Map<String, Object?> e in List<Map<String, Object?>>.of(
         fileAttente)) {
@@ -659,12 +660,52 @@ class BleClient {
     return true;
   }
 
+  /// Cadence du battement de coeur envoye a l'excavatrice.
+  ///
+  /// POURQUOI CE PING (27/10). Le protocole ne produisait aucun trafic entre
+  /// deux positions (5 s) ni entre deux relais (10 s). Or l'excavatrice a un
+  /// watchdog d'inactivite de 30 s : sans battement, une session immobile
+  /// pouvait etre coupee alors que le lien etait sain. Et cote client, rien
+  /// ne permettait de distinguer « lien mort » de « engin silencieux ».
+  ///
+  /// Le gateway REPONDAIT deja au PING par un echo (`typePing`) ; il
+  /// manquait seulement l'emetteur.
+  static const Duration cadenceBattement = Duration(seconds: 8);
+
+  Timer? _battement;
+
+  /// Demarre (ou redemarre) l'emission periodique du PING.
+  void _demarrerBattement() {
+    _battement?.cancel();
+    _battement = Timer.periodic(cadenceBattement, (_) async {
+      final LienBle? lien = _lien;
+      if (lien == null || !connecte) {
+        _battement?.cancel();
+        _battement = null;
+        return;
+      }
+      try {
+        await lien.envoyer(
+          BleProtocole.encoder(BleProtocole.ping(sourceDevice)),
+        );
+      } catch (_) {
+        // Lien parti : `_lienPerdu` fera le menage a la prochaine erreur.
+      }
+    });
+  }
+
+  void _arreterBattement() {
+    _battement?.cancel();
+    _battement = null;
+  }
+
   /// Le lien est tombe : on oublie l'etat authentifie pour que `connecte`
   /// redevienne faux, et la surveillance reprendra la reconnexion.
   ///
   /// La file [fileAttente] est conservee : rien n'est perdu, elle repartira
   /// a la prochaine authentification (CDC §16.1).
   void _lienPerdu() {
+    _arreterBattement();
     if (!_authentifie && _lien == null) return;
     _authentifie = false;
     _lien = null;
@@ -789,6 +830,7 @@ class BleClient {
   }
 
   Future<void> arreter() async {
+    _arreterBattement();
     _timerReconnexion?.cancel();
     _timerReconnexion = null;
     await _sub?.cancel();
