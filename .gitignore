@@ -106,3 +106,4 @@ pulled.apk
 # Scripts jetables ponctuels
 patch_*.py
 patch_*.ps1
+/test/Trails/
