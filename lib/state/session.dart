@@ -1868,6 +1868,7 @@ feederPerle(mesure);
       }
       final BleGateway gateway = BleGateway(
         transport: transport,
+        idGateway: identiteReseau,
         idsAutorises: base.idsDuRole(BaseLocale.roleTab2).toSet(),
         // Journal reseau VERS L'UI : sans lui, la supervision affichait
         // Â« Aucun evenement reseau journalise Â» alors que la connexion

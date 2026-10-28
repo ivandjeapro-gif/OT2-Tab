@@ -34,6 +34,7 @@ class BleGateway {
     JournalBle? journal,
     ControleurProximite? proximite,
     this.maxClients = 5,
+    this.idGateway = 'EXC-001',
     this.delaiInactivite = const Duration(seconds: 30),
   })  : _journal = journal ?? JournalBleMemoire(),
         _proximite = proximite ?? ControleurProximite();
@@ -41,6 +42,13 @@ class BleGateway {
   final TransportBle transport;
   final JournalBle _journal;
   final ControleurProximite _proximite;
+
+  /// Identifiant de l'excavatrice, renvoye dans le handshakeOk (§12).
+  ///
+  /// C'est grace a ce champ que le DT decouvre l'identite reelle de la
+  /// machine sous laquelle il est stationne (ex. HYUNDAI-32, EX-2000),
+  /// sans saturer le paquet d'advertising radio.
+  final String idGateway;
 
   /// Identifiants enrroles autorises a se connecter (CDC §9, REQ-017).
   final Set<String> idsAutorises;
@@ -180,7 +188,7 @@ class BleGateway {
       onError: (Object _) => _deconnexion(id),
     );
     await lien.envoyer(
-        BleProtocole.encoder(BleProtocole.handshakeOk(gatewayId: 'EXC-001')));
+        BleProtocole.encoder(BleProtocole.handshakeOk(gatewayId: idGateway)));
     _journal.ligne('BLE $id connecte (role $role, RSSI $rssi)');
     // Un DT vient d'entrer dans le rayon : la couche au-dessus ouvre sa
     // session perle (§2.3).
@@ -533,18 +541,16 @@ class BleClient {
     // de `delai/2` suffisent et la reconnexion automatique reprendra de
     // toute façon.
     //
-    // PLUS AUCUNE COMPARAISON SUR LE NOM (refonte du 27/10).
+    // SELECTION AUTOMATIQUE PAR PUISSANCE RSSI (MULTI-ENGINS) :
     //
-    // `a.nom != nomRecherche` etait le point de blocage : Android tronque
-    // souvent `localName` (paquet de 31 octets), donc `ORE-EXC-EX-2000`
-    // arrivait en `ORE-EXC-…` et la comparaison echouait TOUJOURS — aucune
-    // connexion n'etait meme tentee. Le nom n'est plus qu'un affichage.
-    //
-    // La selection se fait maintenant en deux temps, robuste :
-    //   1. priorite a un appareil qui annonce notre SERVICE GATT ;
-    //   2. a defaut, le premier appareil reconnu (service ou prefixe de nom).
-    // Le tri par service est un critere materiel, jamais tronque.
+    // Sur une mine avec plusieurs excavatrices emettant le meme service,
+    // on ne prend JAMAIS le premier appareil au hasard : on ecoute une
+    // fenetre rapide (1.5 s max) et on choisit la pelle ayant le signal
+    // le plus fort (le RSSI le plus eleve), c'est-a-dire celle sous
+    // laquelle le camion est stationne.
     final List<AppareilBle> vus = <AppareilBle>[];
+    final DateTime finFenetre =
+        DateTime.now().add(const Duration(milliseconds: 1500));
     await for (final AppareilBle a
         in transport.scanner().timeout(delai, onTimeout: (sink) => sink.close)) {
       vus.add(a);
@@ -552,16 +558,21 @@ class BleClient {
         'BLE vu ${a.nom.isEmpty ? '(sans nom)' : a.nom} (${a.id}, '
         'service=${a.serviceOre}, rssi=${a.rssi})',
       );
-      if (a.serviceOre) {
-        cible = a;
+      // Signal tres fort (ex: >= -55 dBm, camion colle sous le godet) :
+      // decision instantanee sans attendre la fin du delai.
+      if ((a.rssi ?? -100) >= -55) {
+        break;
+      }
+      if (DateTime.now().isAfter(finFenetre)) {
         break;
       }
     }
-    // Trace de synthese : 0 = rien a portee, >0 = des appareils vus mais
-    // aucun retenu. Deux diagnostics opposes qu'on ne pouvait pas distinguer.
     _journal.ligne('BLE scan termine : ${vus.length} appareil(s) vu(s)');
-    // Repli : aucun service annonce, mais des candidats par le nom.
-    cible ??= vus.isEmpty ? null : vus.first;
+    if (vus.isNotEmpty) {
+      // Tri par signal RSSI decroissant : signal le plus fort en tete.
+      vus.sort((a, b) => (b.rssi ?? -100).compareTo(a.rssi ?? -100));
+      cible = vus.first;
+    }
     if (cible == null) {
       _journal.ligne(
         'BLE aucune excavatrice annoncee (service ORE ou nom ORE-EXC) : '
@@ -603,6 +614,11 @@ class BleClient {
         final Map<String, Object?>? m = BleProtocole.decoder(octets);
         if (m == null) return;
         if (m['type'] == BleProtocole.typeHandshakeOk) {
+          final String gatewayId = '${m['gateway_id'] ?? ''}';
+          if (gatewayId.isNotEmpty) {
+            nomAppareil = gatewayId;
+            _journal.ligne('BLE identifie aupres de $gatewayId');
+          }
           if (!verdict.isCompleted) verdict.complete(true);
         } else if (m['type'] == BleProtocole.typeHandshakeKo) {
           _journal.ligne('BLE refus par TAB 2 : ${m['motif']}');
@@ -709,6 +725,10 @@ class BleClient {
     if (!_authentifie && _lien == null) return;
     _authentifie = false;
     _lien = null;
+    // Oubli de l'adresse : quand le DT s'eloigne, le prochain tour
+    // re-evalue la pelle la plus proche par RSSI, permettant au camion de
+    // changer d'excavatrice de facon transparente sans rester bloque.
+    _adresseMemoire = null;
     _journal.ligne('BLE lien perdu avec $sourceDevice - file conservee');
   }
 
