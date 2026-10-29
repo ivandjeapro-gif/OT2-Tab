@@ -107,3 +107,6 @@ pulled.apk
 patch_*.py
 patch_*.ps1
 /test/Trails/
+
+# Fichier de config local (hors repo)
+~/.claude/
