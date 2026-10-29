@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../state/session.dart';
 import '../theme/app_theme.dart';
@@ -45,7 +45,7 @@ class DtScreen extends StatelessWidget {
                     constraints: BoxConstraints(minHeight: minHauteur),
                     // `IntrinsicHeight` : le contenu reclame normalement sa
                     // hauteur naturelle, qui depasse la fenetre en portrait
-                    // etroit — d'ou le debordement. En donnant une hauteur
+                    // etroit â€” d'ou le debordement. En donnant une hauteur
                     // bornee, les `Expanded` internes se partagent la place
                     // disponible et les tableaux se compriment au lieu de
                     // deborder. Le `SingleChildScrollView` reste en secours
@@ -57,7 +57,19 @@ class DtScreen extends StatelessWidget {
                         child: Column(
                           children: [
                             _TopBar(session: session),
-                            SizedBox(height: 16 * mise.k),
+                            // Espacement supprime le 29/10 : la ligne 16*k
+                            // (ancien espace sous la TopBar, avant la
+                            // suppression de la barre de progression) doublait
+                            // la marge visuelle entre le bandeau et les
+                            // tableaux. L'espacement voulu est dans la TopBar.
+                            SizedBox(height: 14 * mise.k),
+                            // Barre de progression PLACEE SOUS LES TABLEAUX
+                            // (demande du 29/10) : elle quitte le bas de la
+                            // ligne globale (carte + valeurs) pour se ranger
+                            // dans la colonne de droite, en dessous du tableau
+                            // Easting/Northing/Elevation. La carte garde ainsi
+                            // toute la hauteur disponible sans etre recousue
+                            // par la barre.
                             Expanded(
                               // Sous 760 px de large, deux colonnes cote a cote
                               // laissent une carte illisible : la carte passe
@@ -88,13 +100,6 @@ class DtScreen extends StatelessWidget {
                                       ],
                                     ),
                             ),
-                            SizedBox(height: 14 * mise.k),
-                            _RouteBar(
-                              progress: session.routeProgress,
-                              fractionWaypoint:
-                                  session.progression.fractionWaypoint,
-                            ),
-                            SizedBox(height: 6 * mise.k),
                           ],
                         ),
                       ),
@@ -167,9 +172,9 @@ class _Valeurs extends StatelessWidget {
     final double k = MiseEnPage.depuis(context).k;
 
     // Repartition en proportions (option 2) : chaque bloc recoit un `flex`
-    // explicite au lieu de se partager « ce qui reste ». La hauteur des
+    // explicite au lieu de se partager Â« ce qui reste Â». La hauteur des
     // tableaux ne depend donc plus de ce que consomment les bandeaux, ecarts
-    // et barre de trajet — elle suit toujours la meme proportion, quelle que
+    // et barre de trajet â€” elle suit toujours la meme proportion, quelle que
     // soit la fenetre.
     //
     // Les bandeaux sont en `FlexFit.loose` : leur `flex` est un **maximum**,
@@ -177,8 +182,9 @@ class _Valeurs extends StatelessWidget {
     // leur part, et la cede au tableau quand la fenetre est basse. C'est ce
     // qui garantit a la fois la proportion stable et l'absence de debordement.
     //
-    // Somme des flex = 25, soit : bandeau d'affectation 5/25, premier
-    // tableau 10/25, second tableau 10/25. Le bandeau d'alerte n'a plus de
+    // Somme des flex = 27, soit : bandeau d'affectation 5/27, premier
+    // tableau 10/27, second tableau 10/27, barre de trajet 2/27 (deplacee
+    // sous les tableaux, demande du 29/10). Le bandeau d'alerte n'a plus de
     // place propre : quand une alerte se declenche, elle se superpose (en
     // Stack) a la banniere d'affectation, sans deplacer les tableaux.
     return Column(
@@ -196,7 +202,7 @@ class _Valeurs extends StatelessWidget {
           flex: 20,
           child: _ValueTable(
             // Le bandeau porte la source de position : un chiffre affiche
-            // plus bas ne vaut que si la ligne du haut dit « GNSS externe ».
+            // plus bas ne vaut que si la ligne du haut dit Â« GNSS externe Â».
             headers: const ['Destination', 'Dumping Area'],
             values: [
               session.destination.isEmpty
@@ -238,15 +244,15 @@ class _Valeurs extends StatelessWidget {
               'Northing',
               'Elevation',
             ],
-            // Valeurs reelles ou « — ». Le tiret couvre deux cas : aucune
+            // Valeurs reelles ou Â« â€” Â». Le tiret couvre deux cas : aucune
             // mesure (acquisition en cours, service arrete) ou mesure
-            // inexistante. Avec « GPS Android » (source interne) on affiche
+            // inexistante. Avec Â« GPS Android Â» (source interne) on affiche
             // maintenant les valeurs obtenues : le test terrain exige de
-            // voir quelque chose, et la source reste signalée par le
-            // libellé ci-dessus. Seule une source externe (GNSS) garantit
+            // voir quelque chose, et la source reste signalÃ©e par le
+            // libellÃ© ci-dessus. Seule une source externe (GNSS) garantit
             // un releve de chantier.
             values: session.easting == null
-                ? const ['—', '—', '—']
+                ? const ['â€”', 'â€”', 'â€”']
                 : [
                     '${session.easting}',
                     '${session.northing}',
@@ -255,6 +261,9 @@ class _Valeurs extends StatelessWidget {
             valueSize: 45,
           ),
         ),
+        // Espace sous le dernier tableau SUPPRIME (29/10) : le SizedBox de
+        // 8 px qui suivait la barre de progression supprimee laissait un blanc
+        // visible entre les tableaux et la barre de notification.
       ],
     );
   }
@@ -331,7 +340,7 @@ class _BanniereAffectation extends StatelessWidget {
               alerte
                   ? messageAlerte
                   : recue
-                      ? 'Validé par le serveur · '
+                      ? 'ValidÃ© par le serveur Â· '
                           '${heureLocal(session.horodatageAffectation)}'
                       : 'Affectation en attente du serveur',
               maxLines: 1,
@@ -412,7 +421,7 @@ class _TopBar extends StatelessWidget {
         SizedBox(width: 8 * k),
         // Meme regle que le bandeau (voyants_entete) : un transport decoche
         // n'existe pas a l'ecran. Sans ces conditions, la barre du DT
-        // continuait d'afficher BLE et Wi-Fi meme avec « XBee seul » coche.
+        // continuait d'afficher BLE et Wi-Fi meme avec Â« XBee seul Â» coche.
         if (session.transportBleActif) ...[
           BleStatusBadge(
             etat: session.etatBleAffiche,
@@ -546,137 +555,3 @@ class _ValueTable extends StatelessWidget {
     );
   }
 }
-
-/// Barre de progression du trajet (depart, prochain waypoint, position, fin).
-///
-/// Le waypoint affiche est le **prochain sommet non franchi de la polyline
-/// recue du serveur** (CDC §4.6), a sa fraction reelle de la longueur du
-/// parcours — pas un repère fige. Sans parcours chargé, aucun waypoint
-/// intermediaire n'est dessine.
-class _RouteBar extends StatelessWidget {
-  const _RouteBar({required this.progress, this.fractionWaypoint});
-
-  final double progress;
-
-  /// Fraction de longueur du prochain waypoint (0..1), ou null sans
-  /// parcours : la barre n'affiche alors que depart/arrivee/position.
-  final double? fractionWaypoint;
-
-  @override
-  Widget build(BuildContext context) {
-    final double k = MiseEnPage.depuis(context).k;
-    // Barre plus visible : 26 px sur la tablette (contre 6 px auparavant,
-    // jugee trop petite a l'usage). Les repères restent lisibles au Doigt.
-    final double hauteur = (10 * k).clamp(15.0, 30.0);
-    final double epaisseur = (6 * k).clamp(3.0, 25.0);
-    final double trait = (55 * k).clamp(0.5, 1.5);
-    // Les cercles ne doivent jamais depasser la hauteur : sinon ils sont
-    // rognes par le bord de la barre. On borne donc chaque cote a la hauteur
-    // disponible.
-    final double coteBornes = (20 * k).clamp(10.0, hauteur);
-    final double coteRepere = (14 * k).clamp(8.0, hauteur);
-    final double cotePosition = (24 * k).clamp(12.0, hauteur);
-
-    return SizedBox(
-      height: hauteur,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final double width = constraints.maxWidth;
-          const double start = 0.03;
-          const double end = 0.97;
-          final double span = end - start;
-          final double current = start + span * progress.clamp(0.0, 1.0);
-          final double? fractionWp = fractionWaypoint;
-          final double wp = fractionWp == null
-              ? -1
-              : start + span * fractionWp.clamp(0.0, 1.0);
-          final double axe = hauteur / 2;
-
-          Widget point(double position, double cote, Widget enfant) =>
-              Positioned(
-                left: width * position - cote / 2,
-                top: axe - cote / 2,
-                child: SizedBox(width: cote, height: cote, child: enfant),
-              );
-
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Positioned(
-                left: width * start,
-                right: width * (1 - end),
-                top: axe - epaisseur / 2,
-                height: epaisseur,
-                child: Container(color: Colors.black),
-              ),
-              Positioned(
-                left: width * start,
-                width: width * (current - start),
-                top: axe - epaisseur / 2,
-                height: epaisseur,
-                child: Container(color: AppColors.green),
-              ),
-              point(
-                start,
-                coteBornes,
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white,
-                    border: Border.fromBorderSide(
-                      BorderSide(color: Colors.black, width: trait),
-                    ),
-                  ),
-                ),
-              ),
-              point(
-                end,
-                coteBornes,
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white,
-                    border: Border.fromBorderSide(
-                      BorderSide(color: Colors.black, width: trait),
-                    ),
-                  ),
-                ),
-              ),
-              if (wp >= 0)
-                point(
-                  wp,
-                  coteRepere,
-                  const DecoratedBox(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Color(0xFFB9BBBD),
-                    ),
-                  ),
-                ),
-              point(
-                current,
-                cotePosition,
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white,
-                    border: Border.fromBorderSide(
-                      BorderSide(color: Colors.black, width: trait),
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.navigation,
-                    size: (18 * k).clamp(12.0, 18.0),
-                    color: AppColors.ink,
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-

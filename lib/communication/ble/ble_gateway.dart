@@ -98,6 +98,22 @@ class BleGateway {
         'autorise(s)');
   }
 
+  /// Reprend l'ecoute sur un abonnement NEUF, meme si le gateway se croit
+  /// deja actif.
+  ///
+  /// [demarrer] est volontairement idempotent : les Parametres la rappellent
+  /// a chaque enregistrement et on ne veut pas empiler les abonnements. Mais
+  /// apres une coupure du Bluetooth, l'abonnement en place ecoute un GATT
+  /// server qu'Android a detruit. `demarrer` sortait alors aussitot sur
+  /// `if (actif) return` et le gateway restait sourd tout en affichant
+  /// « actif » — le defaut remonte du terrain. La reprise force donc le
+  /// renouvellement de l'abonnement.
+  Future<void> redemarrer() async {
+    await _subEntrants?.cancel();
+    _subEntrants = null;
+    await demarrer();
+  }
+
   Future<void> _accueilLien(LienBle lien) async {
     // REQ-005 : borne le nombre de clients simultanes.
     if (_liens.length >= maxClients) {
@@ -454,6 +470,19 @@ class BleClient {
   /// Reglable pour le banc et les tests (attente courte).
   Duration cadenceReconnexion = const Duration(seconds: 10);
 
+  /// Silence tolere de la part de TAB 2 avant de declarer le lien mort.
+  ///
+  /// Symetrique de `BleGateway.delaiInactivite` : la passerelle faisait deja
+  /// ce menage de son cote, le client ne le faisait pas. Le gateway repond
+  /// au PING par un echo, donc un lien sain produit une trame entrante
+  /// toutes les [cadenceBattement] (8 s) : 30 s laissent passer trois echos
+  /// manques avant de trancher, ce qui couvre une micro-coupure radio.
+  Duration delaiInactivite = const Duration(seconds: 30);
+
+  /// Horodatage de la derniere trame RECUE de TAB 2, quel que soit son type.
+  /// Null tant que rien n'est arrive sur le lien courant.
+  DateTime? _derniereTrame;
+
   /// File locale des evenements non acquittes (CDC §16.1).
   final List<Map<String, Object?>> fileAttente = <Map<String, Object?>>[];
 
@@ -693,6 +722,7 @@ class BleClient {
   /// Demarre (ou redemarre) l'emission periodique du PING.
   void _demarrerBattement() {
     _battement?.cancel();
+    _derniereTrame = DateTime.now();
     _battement = Timer.periodic(cadenceBattement, (_) async {
       final LienBle? lien = _lien;
       if (lien == null || !connecte) {
@@ -700,14 +730,48 @@ class BleClient {
         _battement = null;
         return;
       }
+      // SILENCE DE TAB 2 (fix 29/10).
+      //
+      // C'est le seul signal fiable quand le DT s'eloigne : l'ecriture sans
+      // accuse ne leve pas et la souscription GATT peut rester muette. Sans
+      // ce verdict, `connecte` restait vrai indefiniment et le badge restait
+      // vert sur un lien mort (constate en terrain : tablettes eloignees,
+      // Bluetooth deconnecte cote systeme, badge toujours vert).
+      final DateTime? derniere = _derniereTrame;
+      if (derniere != null &&
+          DateTime.now().difference(derniere) > delaiInactivite) {
+        _journal.ligne(
+          'BLE TAB 2 silencieux depuis '
+          '${DateTime.now().difference(derniere).inSeconds} s - lien perdu',
+        );
+        await _abandonnerLien(lien);
+        return;
+      }
       try {
         await lien.envoyer(
           BleProtocole.encoder(BleProtocole.ping(sourceDevice)),
         );
-      } catch (_) {
-        // Lien parti : `_lienPerdu` fera le menage a la prochaine erreur.
+      } catch (e) {
+        // Une ecriture qui leve est un lien mort, pas un incident : l'avaler
+        // laissait le battement tourner sur un lien ferme.
+        _journal.ligne('BLE ping impossible ($e) - lien perdu');
+        await _abandonnerLien(lien);
       }
     });
+  }
+
+  /// Ferme un lien qu'on vient de declarer mort et repasse en recherche.
+  ///
+  /// La fermeture est un bonus : ce qui compte est [_lienPerdu], qui rend
+  /// `connecte` faux — donc le badge orange et la reprise de la boucle de
+  /// reconnexion.
+  Future<void> _abandonnerLien(LienBle lien) async {
+    try {
+      await lien.fermer();
+    } catch (_) {
+      // Lien deja casse cote pile : rien a fermer.
+    }
+    _lienPerdu();
   }
 
   void _arreterBattement() {
@@ -722,6 +786,7 @@ class BleClient {
   /// a la prochaine authentification (CDC §16.1).
   void _lienPerdu() {
     _arreterBattement();
+    _derniereTrame = null;
     if (!_authentifie && _lien == null) return;
     _authentifie = false;
     _lien = null;
@@ -757,6 +822,25 @@ class BleClient {
 
   /// Vrai si la boucle de reconnexion automatique tourne.
   bool get reconnexionAuto => _timerReconnexion != null;
+
+  /// Vrai pendant une tentative de reconnexion (fix 29/10) : evite de lancer
+  /// une seconde tentative concurrente a la reactivation du BT.
+  bool get reconnexionEnCours => _reconnexionEnCours;
+
+  /// La pile Bluetooth locale est tombee : le lien GATT n'existe plus, meme
+  /// si rien ne l'a signale.
+  ///
+  /// `flutter_reactive_ble` ne fait pas toujours remonter une deconnexion
+  /// quand c'est l'ADAPTATEUR qui s'eteint : la souscription de
+  /// caracteristique reste muette, `LienCentral.ouvert` reste vrai, donc
+  /// [connecte] aussi. La boucle de reconnexion sortait alors sur
+  /// `if (connecte) return` et ne retentait JAMAIS — le DT restait accroche
+  /// a un lien fantome. On coupe donc nous-memes, la file est conservee.
+  void signalerPileCoupee() {
+    final LienBle? lien = _lien;
+    if (lien != null) unawaited(lien.fermer());
+    _lienPerdu();
+  }
 
   /// Envoie un evenement et l'ajoute a la file jusqu'a l'ACK (CDC §14/§17).
   ///
@@ -810,6 +894,10 @@ class BleClient {
   final BytesBuilder _tampon = BytesBuilder(copy: false);
 
   void _traiterMessage(Uint8List octets) {
+    // Preuve de vie : n'importe quelle trame, y compris l'echo du PING, et
+    // meme un fragment incomplet — c'est la radio qu'on mesure ici, pas le
+    // protocole.
+    _derniereTrame = DateTime.now();
     if (_tampon.length + octets.length > 8192) {
       _tampon.clear();
       _journal.ligne('BLE tampon purge (>8 ko sans message complet)');

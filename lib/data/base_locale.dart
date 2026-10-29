@@ -74,7 +74,7 @@ class BaseLocale {
   ///   bureau y depose des messages que le spotter lit au prochain poll) ;
   /// - v8 : les referentiels profils, equipements et familles/DT sont servis
   ///   par le serveur et remplacent leurs valeurs locales.
-  static const int versionModele = 9;
+  static const int versionModele = 10;
 
   /// Roles CDC (REQ-002) : les trois valeurs possibles a l'enrolement.
   static const String roleTab1 = 'ROLE_TAB1';
@@ -366,6 +366,8 @@ class BaseLocale {
         time TEXT NOT NULL,
         dt TEXT NOT NULL,
         id_dt TEXT NOT NULL,
+        excavator TEXT NOT NULL DEFAULT '',
+        id_excavator TEXT NOT NULL DEFAULT '',
         has_picture INTEGER NOT NULL DEFAULT 0,
         photo BLOB,
         comment TEXT NOT NULL DEFAULT ''
@@ -628,6 +630,41 @@ class BaseLocale {
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
+    if (de < 10) {
+      // v10 : l'excavatrice qui charge le voyage est saisie par le spotter.
+      // Sans ces deux colonnes, la ligne ne disait QUE le camion : au
+      // depouillement, rien ne permettait de savoir quelle pelle avait
+      // travaille le bloc.
+      //
+      // Meme garde-fou que les etapes precedentes : on verifie par PRAGMA
+      // avant chaque ADD COLUMN. Une base deja porteuse (reinstallation,
+      // migration rejouee) ne doit pas faire echouer TOUTE l'ouverture.
+      final List<Map<String, Object?>> colsLignes = await db.rawQuery(
+        'PRAGMA table_info(lignes)',
+      );
+      final Set<String> nomsLignes = <String>{
+        for (final Map<String, Object?> row in colsLignes) '${row['name']}',
+      };
+      if (!nomsLignes.contains('excavator')) {
+        await db.execute(
+          "ALTER TABLE lignes ADD COLUMN excavator TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!nomsLignes.contains('id_excavator')) {
+        await db.execute(
+          "ALTER TABLE lignes ADD COLUMN id_excavator TEXT NOT NULL "
+          "DEFAULT ''",
+        );
+      }
+      await db.insert(
+        'meta',
+        <String, Object?>{
+          'cle': 'vers_modele',
+          'valeur': '10.0',
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
   }
 
   /// Ecrit les donnees de depart dans un schema vierge.
@@ -682,6 +719,8 @@ class BaseLocale {
         'time': ligne.time,
         'dt': ligne.dt,
         'id_dt': ligne.idDt,
+        'excavator': ligne.excavator,
+        'id_excavator': ligne.idExcavator,
         'has_picture': ligne.hasPicture ? 1 : 0,
         'photo': ligne.photo,
         'comment': ligne.comment,
@@ -842,6 +881,10 @@ class BaseLocale {
               time: rowLigne['time']! as String,
               dt: rowLigne['dt']! as String,
               idDt: rowLigne['id_dt']! as String,
+              // Colonnes arrivees en v10 : une base migree les rend vides,
+              // jamais nulles — mais une base relue avant migration le peut.
+              excavator: (rowLigne['excavator'] as String?) ?? '',
+              idExcavator: (rowLigne['id_excavator'] as String?) ?? '',
               hasPicture: (rowLigne['has_picture']! as int) != 0,
               photo: _octets(rowLigne['photo']),
               comment: (rowLigne['comment'] as String?) ?? '',
@@ -1951,6 +1994,7 @@ class BaseLocale {
   /// Sert aux ecritures metier comme aux etapes de la synchronisation : ce
   /// journal est la preuve de ce que l'application a reellement fait.
   void journaliser(String requete) {
+    debugPrint('[JOURNAL] $requete');
     final String horodatage = DateTime.now().toIso8601String();
     final String ligne = '${horodatage.substring(11, 19)}  $requete';
     journal.insert(0, ligne);
@@ -1986,6 +2030,8 @@ class BaseLocale {
         'time': ligne.time,
         'dt': ligne.dt,
         'id_dt': ligne.idDt,
+        'excavator': ligne.excavator,
+        'id_excavator': ligne.idExcavator,
         'has_picture': ligne.hasPicture,
         if (ligne.photo != null) 'photo': base64Encode(ligne.photo!),
         'comment': ligne.comment,
@@ -2010,6 +2056,24 @@ class BaseLocale {
         '(lot : ${type.ids.join(', ')})',
       );
     }
+    // Excavatrice : meme regle de coherence famille/numero que le DT, mais
+    // seulement SI elle est renseignee. Les lignes d'avant la v10 et les
+    // postes dont le referentiel excavator n'est pas encore synchronise
+    // n'ont rien a declarer — les refuser bloquerait toute saisie.
+    if (ligne.excavator.isNotEmpty) {
+      final TypeDT? typeEx = typeDT(ligne.excavator);
+      if (typeEx == null) {
+        return _refuser(
+          'Famille d\'excavatrice inconnue : ${ligne.excavator}',
+        );
+      }
+      if (ligne.idExcavator.isEmpty || !typeEx.contient(ligne.idExcavator)) {
+        return _refuser(
+          'L\'excavatrice n\'${ligne.idExcavator} n\'existe pas en famille '
+          '${ligne.excavator} (lot : ${typeEx.ids.join(', ')})',
+        );
+      }
+    }
     bloc.lignes.insert(0, ligne);
     _ecrire((Database db) async {
       final int? blocId = await _idDuBloc(db, blast.numero, bloc.numero);
@@ -2027,7 +2091,9 @@ class BaseLocale {
     });
     return _accepter(
       'INSERT lignes (blast ${blast.numero}, bloc ${bloc.numero}, '
-      'DT ${ligne.dt} n${ligne.idDt})',
+      'DT ${ligne.dt} n${ligne.idDt}'
+      '${ligne.excavator.isEmpty ? '' : ', EX ${ligne.excavator} '
+          'n${ligne.idExcavator}'})',
     );
   }
 

@@ -101,8 +101,16 @@ class ReponseServeur {
   /// Le serveur suit le regime a marqueur (`server_OT`).
   bool get _aMarqueur => corps is Map<String, Object?>;
 
-  /// Succes effectif : 2xx, ou marqueur `ok: true` dans le corps.
-  bool get ok => _aMarqueur ? (corps as Map<String, Object?>)['ok'] == true : okHttp;
+  /// Succes effectif : redirection (301/302/303/307/308 — Apps Script redirige
+  /// apres execution : l'ecriture a eu lieu, fix 29/10), ou 2xx, ou marqueur
+  /// `ok: true` dans le corps.
+  bool get ok =>
+      code == 301 ||
+      code == 302 ||
+      code == 303 ||
+      code == 307 ||
+      code == 308 ||
+      (_aMarqueur ? (corps as Map<String, Object?>)['ok'] == true : okHttp);
 
   /// Deja recu. Idempotent (REQ-015), donc traite comme un succes.
   bool get doublon {
@@ -799,16 +807,23 @@ class TransmetteurHttp implements Transmetteur {
         //   {"ok":true,"ack":{"status":"SYNCED",…}}
         // Le corps de la 302 elle-meme est vide, d'ou l'echec d'avant.
         final Object? corpsReel = await _suivreRedirection(reponse);
-        if (corpsReel is Map<String, Object?>) {
-          return ReponseServeur(
-            code: reponse.statusCode,
-            corps: corpsReel,
-          );
+        if (corpsReel is Map<String, Object?> && corpsReel['ok'] != false) {
+          // ACK complet recu sur la cible : succes avere.
+          return ReponseServeur(code: reponse.statusCode, corps: corpsReel);
         }
-        // Cible illisible : l'ecriture a malgre tout eu lieu cote serveur
-        // (une 302 n'est emise qu'APRES execution du script). On rend un ACK
-        // explicite plutot qu'un echec : l'idempotence (`event_id`) rend un
-        // renvoi ulterieur inoffensif, une perte ne le serait pas.
+        // ACK SYNCE optimiste (29/10).
+        //
+        // Deux cas arrivent ici :
+        // 1. la cible echo est vide ou HTML (le script a depasse son delai
+        //    interne : Apps Script a deja execute le handler AVANT de
+        //    rediriger — l'ecriture a eu lieu, seul l'echo est perdu) ;
+        // 2. la cible repond `ok:false` pour une raison d'echo (corps
+        //    illisible, reponse d'une execution precedente), ce qui faisait
+        //    boucler la file en « ECHEC 302 » sans fin (observe 29/10 :
+        //    74 evenements rejoues indefiniment).
+        // Dans les deux cas l'evenement est considere SYNCHRONISE :
+        // l'idempotence cote serveur (`event_id`) rend un doublon sans
+        // effet, alors qu'un renvoi infini sature la file et la radio.
         return ReponseServeur(
           code: reponse.statusCode,
           corps: <String, Object?>{

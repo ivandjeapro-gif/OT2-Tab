@@ -127,11 +127,36 @@ class _SpotterScreenState extends State<SpotterScreen> {
     String typeChoisi = famillesDT.first.code;
     String? idDtChoisi;
 
+    // QUELLE EXCAVATRICE CHARGE CE VOYAGE (29/10).
+    //
+    // La ligne ne disait que le camion : au depouillement, impossible de
+    // savoir quelle pelle avait travaille le bloc. Le formulaire demande
+    // donc aussi l'excavatrice, par la MEME mecanique a deux listes liees
+    // que le DT — mais en puisant dans les familles du profil EXCAVATOR
+    // (role TAB 3), jamais dans celles du DT.
+    final Profil? profilEx = session.base.profilDuRole(BaseLocale.roleTab3);
+    final Set<String> codesEx = profilEx == null
+        ? <String>{}
+        : session.base.famillesDuProfil(profilEx).toSet();
+    final List<TypeDT> famillesEx = <TypeDT>[
+      for (final TypeDT t in session.base.typesDT)
+        if (codesEx.contains(t.code)) t,
+    ];
+    // Referentiel excavator pas encore synchronise : on n'empeche PAS la
+    // saisie (le spotter doit pouvoir travailler), la ligne part alors sans
+    // excavatrice et la base l'accepte — cf. `ajouterLigne`.
+    String? typeExChoisi = famillesEx.isEmpty ? null : famillesEx.first.code;
+    String? idExChoisi;
+
     final bool? saved = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) {
           final TypeDT? famille = session.base.typeDT(typeChoisi);
+          final TypeDT? familleEx =
+              typeExChoisi == null
+                  ? null
+                  : session.base.typeDT(typeExChoisi!);
 
           Future<void> capturer(ImageSource source) async {
             // Permissions runtime a chaud (point 4 du reste-a-faire) : la
@@ -430,6 +455,116 @@ class _SpotterScreenState extends State<SpotterScreen> {
                       setStateDialog(() => idDtChoisi = id),
                 ),
                 const SizedBox(height: 14),
+                // Referentiel excavator absent : on le DIT, au lieu de
+                // laisser croire que le champ a ete oublie.
+                if (famillesEx.isEmpty)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.greyBg,
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Text(
+                      'Aucune famille d excavatrice enregistree.\n'
+                      'La ligne partira sans excavatrice ; lancez Actualiser '
+                      'sur l ecran de connexion pour la renseigner.',
+                      style: TextStyle(
+                        fontFamily: kSerif,
+                        fontSize: (13 * MiseEnPage.depuis(context).k)
+                            .clamp(10.0, 13.0),
+                        color: AppColors.slate,
+                      ),
+                    ),
+                  )
+                else ...[
+                  // Liste 3 : la famille d'excavatrice (EX 1250, PC 2000...).
+                  DropdownButtonFormField<String>(
+                    initialValue: typeExChoisi,
+                    isExpanded: true,
+                    style: TextStyle(
+                      fontFamily: kSerif,
+                      fontSize:
+                          (14 * MiseEnPage.depuis(context).k).clamp(10.0, 14.0),
+                      color: AppColors.ink,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Excavator',
+                      labelStyle: TextStyle(
+                        fontFamily: kSerif,
+                        letterSpacing: 1,
+                        color: AppColors.slate,
+                      ),
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      for (final TypeDT option in famillesEx)
+                        DropdownMenuItem<String>(
+                          value: option.code,
+                          child: Text(
+                            '${option.code}  (${option.nombreDts})',
+                          ),
+                        ),
+                    ],
+                    onChanged: (String? code) {
+                      if (code == null) return;
+                      setStateDialog(() {
+                        typeExChoisi = code;
+                        // Changer de famille invalide le numero retenu :
+                        // meme regle que pour le DT, un numero n'existe que
+                        // dans le lot de sa famille.
+                        final TypeDT? nouvelle = session.base.typeDT(code);
+                        if (idExChoisi != null &&
+                            nouvelle?.contient(idExChoisi!) != true) {
+                          idExChoisi = null;
+                        }
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  // Liste 4 : les excavatrices de la famille choisie.
+                  DropdownButtonFormField<String>(
+                    initialValue: idExChoisi,
+                    isExpanded: true,
+                    hint: Text(
+                      familleEx == null
+                          ? 'Aucune excavatrice'
+                          : 'Select dans ${familleEx.code}',
+                      style: TextStyle(
+                        fontFamily: kSerif,
+                        fontSize: (13 * MiseEnPage.depuis(context).k)
+                            .clamp(10.0, 13.0),
+                        color: AppColors.greyText,
+                      ),
+                    ),
+                    style: TextStyle(
+                      fontFamily: kSerif,
+                      fontSize:
+                          (14 * MiseEnPage.depuis(context).k).clamp(10.0, 14.0),
+                      color: AppColors.ink,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Id Excavator',
+                      labelStyle: TextStyle(
+                        fontFamily: kSerif,
+                        letterSpacing: 1,
+                        color: AppColors.slate,
+                      ),
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      for (final String id
+                          in session.idsDuType(typeExChoisi ?? ''))
+                        DropdownMenuItem<String>(
+                          value: id,
+                          child: Text(id),
+                        ),
+                    ],
+                    onChanged: (String? id) =>
+                        setStateDialog(() => idExChoisi = id),
+                  ),
+                  const SizedBox(height: 14),
+                ],
                 // Picture : un bouton, pas une case a cocher. Il demande
                 // d'abord la source (appareil photo ou galerie), puis
                 // affiche la vignette de l'image retenue.
@@ -475,6 +610,17 @@ class _SpotterScreenState extends State<SpotterScreen> {
                   });
                   return;
                 }
+                // L'excavatrice n'est exigee que si le referentiel en
+                // propose : sans famille connue, le champ n'est pas affiche
+                // et la ligne part sans — bloquer la saisie serait pire que
+                // l'information manquante.
+                if (famillesEx.isNotEmpty && idExChoisi == null) {
+                  setStateDialog(() {
+                    erreur = 'Choisissez l\'excavatrice qui charge ce voyage '
+                        'avant d\'enregistrer';
+                  });
+                  return;
+                }
                 Navigator.pop(context, true);
               },
               child: const Text('Enregistrer'),
@@ -493,6 +639,10 @@ class _SpotterScreenState extends State<SpotterScreen> {
     // Dart ne promeut pas cette variable : elle est reassignee par les
     // closures du formulaire. On fige la valeur retenue avant l'ecriture.
     final String idRetenu = idDtChoisi ?? '';
+    final String idExRetenu = idExChoisi ?? '';
+    // Pas de famille sans numero, pas de numero sans famille : une moitie de
+    // selection ne doit pas atteindre la base.
+    final String exRetenu = idExRetenu.isEmpty ? '' : (typeExChoisi ?? '');
     final Uint8List? octetsPhoto = photo;
     if (idRetenu.isEmpty) return;
 
@@ -504,6 +654,8 @@ class _SpotterScreenState extends State<SpotterScreen> {
             '${now.minute.toString().padLeft(2, '0')}',
         dt: typeChoisi,
         idDt: idRetenu,
+        excavator: exRetenu,
+        idExcavator: exRetenu.isEmpty ? '' : idExRetenu,
         hasPicture: octetsPhoto != null,
         photo: octetsPhoto,
         comment: commentaire,
@@ -1685,10 +1837,14 @@ const _columns = [
   'Bloc',
   'DT',
   'Id DT',
+  'Excav',
+  'Id Ex',
   'Picture',
   'Comment',
 ];
-const _weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.7];
+// Deux colonnes de plus qu'avant (l'excavatrice) : les colonnes etroites
+// cedent un peu de place pour que `Comment` reste lisible sur une tablette.
+const _weights = [1.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.8, 1.5];
 
 class _TableHeader extends StatelessWidget {
   const _TableHeader();
@@ -1760,6 +1916,8 @@ class _TableRow extends StatelessWidget {
       bloc,
       ligne.dt,
       ligne.idDt,
+      ligne.excavator,
+      ligne.idExcavator,
       '',
       ligne.comment,
     ];
@@ -1781,7 +1939,7 @@ class _TableRow extends StatelessWidget {
                           left: BorderSide(color: AppColors.border, width: 1),
                         ),
                       ),
-                child: i == 5
+                child: i == 7
                     ? InkWell(
                         onTap: () => _voirPhoto(context, ligne),
                         child: Icon(

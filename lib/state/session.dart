@@ -1829,6 +1829,34 @@ feederPerle(mesure);
       // seule au retour de l'excavatrice (demarrage compris : si `connecter`
       // a echoue, la boucle fait la premiere tentative suivante).
       client.demarrerReconnexionAuto();
+      // REPRISE AUTOMATIQUE APRES REACTIVATION DU BLUETOOTH (fix 29/10).
+      //
+      // Cote DT aussi : quand le BT est rallume, `flutter_reactive_ble` doit
+      // voir la pile PRET a nouveau pour que les scans reussissent. Le client
+      // garde deja sa boucle de reconnexion, il suffit donc de RETENTER
+      // IMMEDIATEMENT a la transition vers PRET au lieu d'attendre la
+      // prochaine cadence (10 s).
+      _abonnementPileBle?.cancel();
+      _abonnementPileBle = transport.etatPile.listen((bool prete) async {
+        if (!prete) {
+          base.journaliser('BLE pile BT coupee - attente de reactivation');
+          // Le lien ne survit pas a l'extinction de l'adaptateur, mais la
+          // pile ne le signale pas toujours : sans cet aveu, le client se
+          // croyait encore connecte et sa boucle de reconnexion sortait
+          // immediatement (`if (connecte) return`) — le DT restait en
+          // recherche indefiniment.
+          client.signalerPileCoupee();
+          bleActif = false;
+          notifyListeners();
+          return;
+        }
+        bleActif = true;
+        base.journaliser('BLE pile BT reactive - relance connexion client');
+        notifyListeners();
+        if (!client.connecte && !client.reconnexionEnCours) {
+          unawaited(client.connecter());
+        }
+      });
     } else if (estExcavatrice) {
       // Excavatrice : emet en BLE, accepte les DT entres dans son rayon.
       // En transport reel, demarre l'advertising (le gateway ne le fait pas :
@@ -1939,12 +1967,51 @@ feederPerle(mesure);
         notifyListeners();
       });
       push('BLE passerelle active - ${gateway.idsAutorises.length} appareil(s) autorisÃ©(s)');
+      // REPRISE AUTOMATIQUE APRES REACTIVATION DU BLUETOOTH (fix 29/10).
+      //
+      // Quand le BT est coupe puis rallume, Android DETRUIT le GATT server :
+      // sans relance, l'advertising ne repart jamais et aucun DT ne retrouve
+      // l'excavatrice (constate en terrain). On ecoute l'etat de la pile via
+      // [TransportBle.etatPile] : a la transition vers PRET, on reaffirme la
+      // publicite et on redemarre le gateway (idempotent).
+      _abonnementPileBle?.cancel();
+      _abonnementPileBle = transport.etatPile.listen((bool prete) async {
+        if (!prete) {
+          base.journaliser('BLE pile BT coupee - attente de reactivation');
+          bleActif = false;
+          tab3Connectes = 0;
+          notifyListeners();
+          return;
+        }
+        base.journaliser('BLE pile BT reactive - reconstruction de la couche');
+        if (transport is TransportBlePeripherique) {
+          final TransportBlePeripherique periph = transport;
+          try {
+            // Le transport a oublie son GATT server a la coupure : cet appel
+            // le rouvre, reinscrit le service ORE puis relance l'annonce.
+            await periph.demarrerPublicite();
+            base.journaliser('BLE advertising relance');
+          } catch (e) {
+            base.journaliser('BLE relance advertising ECHEC : $e');
+          }
+        }
+        // `demarrer()` serait sortie aussitot (le gateway se croit actif) et
+        // l'abonnement serait reste branche sur le flux du serveur detruit.
+        await gateway.redemarrer();
+        bleActif = true;
+        notifyListeners();
+      });
     }
     notifyListeners();
   }
 
   /// Etat XBee expose aux ecrans (badge voyant, supervision).
   bool xbeeActif = false;
+
+  /// Abonnement a l'etat de la pile BT (fix 29/10) : permet de relancer la
+  /// couche BLE (advertising cote excavatrice, connexion cote DT) des que
+  /// le Bluetooth est RALLUME. Annule a chaque redemarrage de la couche.
+  StreamSubscription<bool>? _abonnementPileBle;
 
   /// Badge XBee : allume si le port serie est ouvert, eteint sinon. Aligne sur
   /// les autres voyants pour que le bandeau reste homogene.

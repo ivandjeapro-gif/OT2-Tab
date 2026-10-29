@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ============================================================
  *  ORE TRACKING â€” SERVEUR CENTRAL (Google Apps Script)
  * ============================================================
@@ -146,7 +146,13 @@ const SCHEMAS = {
 
 const COLONNES_EVENEMENTS = [
   'event_id', 'gateway_id', 'source_device', 'event_type', 'timestamp',
-  'received_at', 'payload', 'easting', 'northing', 'elevation',
+  'received_at', 'payload', 'easting', 'northing', 'elevation',
+  // Perle : position du godet et moyenne de session (Â§2.3).
+  'xbloc', 'ybloc', 'zbloc', 'xmoy', 'ymoy', 'zmoy', 'nombre', 'dt',
+  // Photos : la base64 sort du payload (limite de 50 000 par cellule) et se
+  // decoupe en morceaux successifs.
+  'photo', 'photo_2', 'photo_3', 'photo_4', 'photo_5', 'photo_6',
+  'photo_7', 'photo_8',
 ];
 
 /**
@@ -176,7 +182,16 @@ function ligneDebutEvenements(sh) {
  * insertion seulement si manquant) et executable a la main depuis l'editeur
  * (fonction initialiser) pour verifier le deploiement.
  */
+/** Vrai quand initialiser() a deja tourne dans CETTE execution Apps Script. */
+var INITIALISE_POUR_EXECUTION = false;
+
 function initialiser() {
+  // Perf (27/10) : voir INITIALISE_POUR_EXECUTION. Sans cette sortie, le POST
+  // d'un evenement payait l'ouverture du classeur + la relecture de lotte
+  // et equipements a chaque fois (7,9 s mesure), d'ou la redirection 302
+  // sans corps et des evenements bloques en file.
+  if (INITIALISE_POUR_EXECUTION) return 'deja fait';
+  INITIALISE_POUR_EXECUTION = true;
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   // Migration avant la creation des onglets : elle convertirait sinon dans
   // le vide si `flotte` venait d'etre creee vide par sa propre boucle
@@ -196,6 +211,20 @@ function initialiser() {
     sh.setFrozenRows(1);
   } else {
     const sh = ss.getSheetByName(CONFIG.ONGLETS.EVENEMENTS);
+    // ENTETE PHYSIQUE : completer la ligne 1 jusqu'a COLONNES_EVENEMENTS.
+    // Sans cela, un onglet cree avant l'ajout des colonnes perle (27/10)
+    // restait a 10 titres alors que les ecritures en posaient 18.
+    try {
+      const largeur = sh.getLastColumn();
+      if (largeur < COLONNES_EVENEMENTS.length) {
+        sh.getRange(1, 1, 1, COLONNES_EVENEMENTS.length)
+          .setValues([COLONNES_EVENEMENTS]).setFontWeight('bold')
+          .setBackground('#f3f3f3');
+        sh.setFrozenRows(1);
+        journal('MIGRATION entete evenements : ' +
+                COLONNES_EVENEMENTS.length + ' colonnes');
+      }
+    } catch (_) { /* entete illisible : on ne bloque pas l'ecriture */ }
     // Onglet deja rempli par des evenements SANS entete : on ne decale RIEN
     // de force (les donnees existantes resteraient en ligne 1 et seraient
     // lues comme un event_id invalide). On signale seulement.
@@ -318,6 +347,7 @@ function doGet(e) {
       case 'affectation':  return affectationLire();
       case 'blasts':       return blastsLire();
       case 'referentiels': return referentielsLire();
+      case 'plans':        return plansInventaire();
       case 'plan':         return planServir(p.carte || '');
       case 'sante':        return sante();
       case 'migrer':       return migrationExecuter();
@@ -332,10 +362,12 @@ function doGet(e) {
 
 function doPost(e) {
   return reponse(function () {
-    initialiser(); // cree les onglets manquants (idempotent, leger)
     const p = e.parameter || {};
     verifierToken(p.token);
     if (p.action === 'evenement') {
+      // CHEMIN CHAUD : aucun initialiser() ici. L'ecriture d'un evenement
+      // ne cree aucun onglet ; initialiser a chaque GPS (5 s) faisait
+      // depasser le delai d'Apps Script (302 sans corps, file bloquee).
       return evenementTraiter(e.postData ? e.postData.contents : '');
     }
     if (p.action === 'notification') {
@@ -568,7 +600,11 @@ function ecrireAffectationCles(nom, lignes) {
 /** Types d'evenements acceptes (CDC Â§3.2). */
 const TYPES_ACCEPTES = [
   'GPS_UPDATE', 'LINE_ADD', 'BLAST_LOCK',
-  'BLAST_UNLOCK', 'BLAST_SEND', 'BLE_RELAY',
+  'BLAST_UNLOCK', 'BLAST_SEND', 'BLE_RELAY',
+  // Position du godet (perle) et sa moyenne de session, emises par
+  // l'ecran Excavator. OUBLIEES ici : le serveur les refusait en 400,
+  // la tablette les renvoyait sans fin et la file grossissait (27/10).
+  'POSITION_PERLE', 'MOYENNE_PERLE',
 ];
 
 /**
@@ -603,7 +639,13 @@ function evenementTraiter(brut) {
     return corps(false, 'payload manquant pour ' + type);
   }
   if (type === 'GPS_UPDATE' && !payloadGpsValide(enveloppe.payload)) {
-    return corps(false, 'GPS_UPDATE sans easting/northing valides');
+    return corps(false, 'GPS_UPDATE sans easting/northing valides');
+  if (type === 'POSITION_PERLE' && !payloadPerleValide(enveloppe.payload)) {
+    return corps(false, 'POSITION_PERLE sans xbloc/ybloc/zbloc valides');
+  }
+  if (type === 'MOYENNE_PERLE' && !payloadMoyenneValide(enveloppe.payload)) {
+    return corps(false, 'MOYENNE_PERLE sans xmoy/ymoy/zmoy valides');
+  }
   }
 
   const sh = feuille(CONFIG.ONGLETS.EVENEMENTS);
@@ -644,21 +686,74 @@ function evenementTraiter(brut) {
     // toujours APRES la derniere ligne remplie, ce qui est correct ici, mais
     // setValues rend la ligne visee explicite (et evite une ligne vide
     // intercalaires quand une colonne est laissee vide).
-    sh.appendRow([
+    // ECRITURE EXPLICITE SUR LA LIGNE VISEE (27/10).
+    //
+    // ppendRow ecrivait a la premiere ligne vide de la FEUILLE, sans
+    // garantir que l'entete physique faisait 18 colonnes. Consequence au
+    // terrain : les lignes se decalaient, easting/northing/elevation
+    // tombaient dans les colonnes du godet et inversement.
+    //
+    // On ecrit donc sur getLastRow() + 1 avec la largeur EXACTE de
+    // [COLONNES_EVENEMENTS] : une ligne = un evenement, toujours aligne.
+    //
+    // Les cellules non concernees restent VIDEES (''), jamais mises a 0 :
+    // Number(x) || 0 remplissait chaque colonne inutilisee d'un zero, si
+    // bien qu'on ne pouvait plus distinguer Â« pas de valeur Â» de Â« valeur
+    // nulle Â» a la lecture du sheet.
+    const valeurs = [
       id,
       String(enveloppe.gateway_id || ''),
       String(enveloppe.source_device || ''),
       type,
       String(enveloppe.timestamp || ''),
       maintenant(),                              // received_at (CDC Â§3.4)
-      JSON.stringify(enveloppe.payload),
+      // PAYLOAD SANS LA PHOTO (27/10).
+      //
+      // Une photo JPEG en base64 depasse 50 000 caracteres des qu'elle a une
+      // taille terrain : Google Sheets REFUSE alors la cellule et l'evenement
+      // n'est jamais enregistre (Â« Exception: votre saisie depasse le nombre
+      // maximum de 50000 caracteres autorise par cellule Â»). Les LINE_ADD et
+      // BLAST_SEND avec photo echouaient donc en silence.
+      //
+      // La photo part dans une colonne DEDIEE, decoupee en morceaux de
+      // 45 000 caracteres (colonnes photo, photo_2, photo_3...). Le
+      // payload garde tout le reste et un simple drapeau photo_tronquee.
+      JSON.stringify(payloadSansPhoto(enveloppe.payload)),
+      // Position de la TABLETTE (GPS_UPDATE uniquement).
       type === 'GPS_UPDATE' ? Number(enveloppe.payload.easting) || '' : '',
       type === 'GPS_UPDATE' ? Number(enveloppe.payload.northing) || '' : '',
-      // ELEVATION (altitude, §5) : meme regle que X/Y, en colonne dediee.
-      // Le client l'envoie deja depuis toujours (`payload.elevation`) ; elle
-      // n'etait simplement pas extraite dans le sheet.
-      type === 'GPS_UPDATE' ? Number(enveloppe.payload.elevation) || 0 : '',
-    ]);
+      type === 'GPS_UPDATE' ? Number(enveloppe.payload.elevation) || '' : '',
+      // Position du GODET (POSITION_PERLE uniquement), en coordonnees de bloc.
+      type === 'POSITION_PERLE' ? Number(enveloppe.payload.xbloc) || '' : '',
+      type === 'POSITION_PERLE' ? Number(enveloppe.payload.ybloc) || '' : '',
+      type === 'POSITION_PERLE' ? Number(enveloppe.payload.zbloc) || '' : '',
+      // Moyenne de session (MOYENNE_PERLE uniquement).
+      type === 'MOYENNE_PERLE' ? Number(enveloppe.payload.xmoy) || '' : '',
+      type === 'MOYENNE_PERLE' ? Number(enveloppe.payload.ymoy) || '' : '',
+      type === 'MOYENNE_PERLE' ? Number(enveloppe.payload.zmoy) || '' : '',
+      type === 'MOYENNE_PERLE' ? Number(enveloppe.payload.nombre) || '' : '',
+      (type === 'POSITION_PERLE' || type === 'MOYENNE_PERLE')
+        ? String(enveloppe.payload.dt || '') : '',
+    ];
+    // Ligne visee : la premiere libre APRES l'entete. getLastRow() rend la
+    // derniere ligne utilisee ; +1 ne peut donc jamais recouvrir une donnee.
+    const ligneVisee = sh.getLastRow() + 1;
+    // PHOTO : colonnes suivantes, par morceaux (voir [morceauxPhoto]).
+    for (const morceau of morceauxPhoto(enveloppe.payload)) {
+      valeurs.push(morceau);
+    }
+    // Garde-fou final : une valeur hors limite ferait echouer TOUTE la ligne.
+    // On la remplace par un marqueur plutot que de perdre l'evenement.
+    const valeursSure = valeurs.map(function (v) {
+      const t = String(v === null || v === undefined ? '' : v);
+      return t.length > 49000
+        ? '[valeur trop volumineuse : ' + t.length + ' caracteres]'
+        : v;
+    });
+        if (sh.getMaxColumns() < valeursSure.length) {
+      sh.insertColumnsAfter(sh.getMaxColumns(), valeursSure.length - sh.getMaxColumns());
+    }
+    sh.getRange(ligneVisee, 1, 1, valeursSure.length).setValues([valeursSure]);
     journal('EVENT ' + type + ' ' + id + ' de ' + (enveloppe.source_device || '?'));
     return corps(true, {
       ack: { event_id: id, status: 'SYNCED', received_at: maintenant() },
@@ -669,6 +764,49 @@ function evenementTraiter(brut) {
 }
 
 /** GPS_UPDATE exige easting et northing numeriques (CDC Â§3.2). */
+/** POSITION_PERLE exige xbloc, ybloc et zbloc numeriques. */
+/** Copie du payload SANS le champ photo (trop volumineux pour une cellule). */
+function payloadSansPhoto(payload) {
+  const copie = {};
+  if (!payload || typeof payload !== 'object') return copie;
+  for (const cle in payload) {
+    if (cle === 'photo') continue;
+    copie[cle] = payload[cle];
+  }
+  // Signale que la photo existe ailleurs, sans la dupliquer.
+  if (payload.photo) copie.photo_separee = true;
+  return copie;
+}
+
+/**
+ * Decoupe la photo base64 en morceaux de 45 000 caracteres au plus.
+ *
+ * Une cellule Sheets plafonne a 50 000 : on garde de la marge. Rend une
+ * liste vide s'il n'y a pas de photo, ce qui laisse les colonnes suivantes
+ * vides sans decaler les autres lignes.
+ */
+function morceauxPhoto(payload) {
+  const photo = payload && payload.photo ? String(payload.photo) : '';
+  if (!photo) return [];
+  const TAILLE = 45000;
+  const morceaux = [];
+  for (let i = 0; i < photo.length && morceaux.length < 8; i += TAILLE) {
+    morceaux.push(photo.substring(i, i + TAILLE));
+  }
+  return morceaux;
+}
+
+function payloadPerleValide(p) {
+  return p && isFinite(Number(p.xbloc)) && isFinite(Number(p.ybloc)) &&
+         isFinite(Number(p.zbloc));
+}
+
+/** MOYENNE_PERLE exige xmoy, ymoy et zmoy numeriques (nombre facultatif). */
+function payloadMoyenneValide(p) {
+  return p && isFinite(Number(p.xmoy)) && isFinite(Number(p.ymoy)) &&
+         isFinite(Number(p.zmoy));
+}
+
 function payloadGpsValide(p) {
   const e = Number(p.easting), n = Number(p.northing);
   return isFinite(e) && isFinite(n) && e !== 0 && n !== 0;
@@ -1069,6 +1207,156 @@ function baseUrl() {
  * Rend '' si le fichier n'existe pas dans le dossier (le caller retombe
  * alors sur l'URL Apps Script, qui signalera l'absence).
  */
+// ============================================================
+//  Inventaire des plans (Maps) du dossier Drive
+// ============================================================
+/**
+ * Ouvre le dossier des plans et rend le Folder, ou leve une erreur explicite.
+ *
+ * Le point sensible : un dossier partage A UNE ADRESSE donnee est lisible en
+ * HTTP, mais DriveApp exige que le compte qui execute le script figure parmi
+ * les personnes autorisees (ou que le partage soit public). D'ou de vrais
+ * messages au lieu d'un catch muet.
+ */
+function ouvrirDossierPlans() {
+  return DriveApp.getFolderById(CONFIG.DOSSIER_PLANS_ID);
+}
+
+/** Vrai si le nom correspond a un fichier image exploitable comme plan. */
+function estFichierPlan(nom) {
+  return /\.(jpe?g|png|gif|webp|bmp)$/i.test(String(nom || ''));
+}
+
+/** Code de carte deduit du nom de fichier (sans extension ni prefixe plan_). */
+function codeCarteDepuisNom(nom) {
+  let n = String(nom || '').trim();
+  const point = n.lastIndexOf('.');
+  if (point > 0) n = n.substring(0, point);
+  if (n.toLowerCase().indexOf('plan_') === 0) n = n.substring(5);
+  return n.trim();
+}
+
+/**
+ * GET ?action=plans : liste EXHAUSTIVE du dossier.
+ *
+ * Reponse : { ok:true, dossier:<id>, nombre:<n>,
+ *             plans:[{carte, id, nom, url}] }
+ *
+ * ok:false protege le poste : le client ne supprime rien et ne telecharge
+ * rien quand l'inventaire n'est pas sur. Une liste VIDE, au contraire, est
+ * une information : le dossier est vide, la tablette purge ses plans.
+ */
+function plansInventaire() {
+  let dossier;
+  try {
+    dossier = ouvrirDossierPlans();
+  } catch (e) {
+    return corps(false,
+      'dossier plans inaccessible : ' + (e && e.message ? e.message : e) +
+      ' - partagez le dossier avec l\'adresse qui execute la Web App ' +
+      '(au moins Lecteur), ou avec toute personne disposant du lien');
+  }
+  const plans = [];
+  try {
+    const fichiers = dossier.getFiles();
+    while (fichiers.hasNext()) {
+      const f = fichiers.next();
+      const nom = f.getName();
+      if (!estFichierPlan(nom)) continue;
+      const id = f.getId();
+      plans.push({
+        carte: codeCarteDepuisNom(nom),
+        id: id,
+        nom: nom,
+        url: 'https://drive.google.com/uc?export=download&confirm=t&id=' + id,
+      });
+    }
+  } catch (e) {
+    return corps(false,
+      'lecture du dossier plans impossible : ' + (e && e.message ? e.message : e));
+  }
+  // Tri stable : deux appels successifs rendent le meme ordre, les journaux
+  // et les diffs restent comparables.
+  plans.sort((a, b) => (a.carte < b.carte ? -1 : (a.carte > b.carte ? 1 : 0)));
+  return corps(true, {
+    dossier: dossier.getId(),
+    nombre: plans.length,
+    plans: plans,
+  });
+}
+
+/**
+ * Etat lisible du dossier des plans, pour l'action sante.
+ * Ex. "OK (12 fichier(s))" ou "INACCESSIBLE : <motif>".
+ */
+function etatDossierPlans() {
+  let dossier;
+  try {
+    dossier = ouvrirDossierPlans();
+  } catch (e) {
+    return 'INACCESSIBLE : ' + (e && e.message ? e.message : e);
+  }
+  let n = 0;
+  const fichiers = dossier.getFiles();
+  while (fichiers.hasNext()) {
+    if (estFichierPlan(fichiers.next().getName())) n++;
+  }
+  return 'OK (' + n + ' fichier(s))';
+}
+
+/**
+ * A executer UNE FOIS depuis l'editeur Apps Script (bouton Executer, puis
+ * menu Journal) : dit en clair qui execute, qui possede le dossier, quels
+ * sont ses droits de partage et quels fichiers y sont.
+ */
+function diagnosticDossierPlans() {
+  const lignes = [];
+  try {
+    lignes.push('Compte executant : ' + Session.getEffectiveUser().getEmail());
+  } catch (e) {
+    lignes.push('Compte executant : (inconnu)');
+  }
+  let dossier;
+  try {
+    dossier = ouvrirDossierPlans();
+  } catch (e) {
+    lignes.push('OUVERTURE : ECHEC');
+    lignes.push('  motif : ' + (e && e.message ? e.message : e));
+    lignes.push('  a faire : partager le dossier avec le compte ci-dessus ' +
+      '(Lecteur minimum), ou avec toute personne disposant du lien');
+    Logger.log(lignes.join('\n'));
+    return lignes.join('\n');
+  }
+  lignes.push('OUVERTURE : OK');
+  lignes.push('  nom     : ' + dossier.getName());
+  lignes.push('  id      : ' + dossier.getId());
+  try { lignes.push('  proprio : ' + dossier.getOwner().getEmail()); }
+  catch (e) { lignes.push('  proprio : (non lisible)'); }
+  try {
+    lignes.push('  partage : ' + dossier.getSharingAccess() +
+      ' / ' + dossier.getSharingPermission());
+  } catch (e) { lignes.push('  partage : (non lisible)'); }
+  const fichiers = dossier.getFiles();
+  let n = 0;
+  const exemples = [];
+  while (fichiers.hasNext()) {
+    const f = fichiers.next();
+    if (!estFichierPlan(f.getName())) continue;
+    if (exemples.length < 10) {
+      exemples.push('  - ' + f.getName() + '  [' + f.getId() + ']');
+    }
+    n++;
+  }
+  lignes.push('PLANS : ' + n);
+  Array.prototype.push.apply(lignes, exemples);
+  Logger.log(lignes.join('\n'));
+  return lignes.join('\n');
+}
+
+/**
+ * URL de telechargement direct d'un plan, ou '' s'il est absent du dossier.
+ * Conserve l'ancien nom urlPlanDrive : d'autres routes s'appuient dessus.
+ */
 function urlPlanDrive(carte) {
   if (!carte) return '';
   try {
@@ -1181,10 +1469,8 @@ function sante() {
   }
   let pistes = 'ok';
   try { DriveApp.getFileById(CONFIG.FICHIER_PISTES_ID).getName(); }
-  catch (_) { pistes = 'INACCESSIBLE'; }
-  let plans = 'ok';
-  try { DriveApp.getFolderById(CONFIG.DOSSIER_PLANS_ID).getName(); }
-  catch (_) { plans = 'INACCESSIBLE'; }
+  catch (_) { pistes = 'INACCESSIBLE'; }  // Etat MESURE (nombre de fichiers ou motif exact de l'echec).
+  const plans = etatDossierPlans();
   return corps(true, {
     service: 'ORE TRACKING serveur',
     protocole: CONFIG.VERSION_PROTOCOLE,
@@ -1204,6 +1490,132 @@ function sante() {
  * L'operateur ne doit pas avoir a ouvrir l'editeur Apps Script : le SaaS
  * appelle cette action via /api/gas/migrate.
  */
+/**
+ * Repare l'onglet evenements : remet l'entete a 18 colonnes et REALIGNE
+ * les lignes existantes d'apres leur payload JSON (source de verite).
+ *
+ * A lancer UNE FOIS depuis l'editeur (menu Executer > reparerEvenements)
+ * apres le correctif du 27/10 : les lignes ecrites avant etaient decalees
+ * (easting dans la colonne du godet, zeros partout ailleurs).
+ *
+ * @return {string} compte rendu
+ */
+/**
+ * Repare l'onglet `evenements` : entete a 18 colonnes, puis REALIGNEMENT
+ * des lignes d'apres leur payload JSON (source de verite).
+ *
+ * A lancer UNE FOIS depuis l'editeur (Executer > reparerEvenements).
+ *
+ * LIMITE GOOGLE SHEETS : une cellule ne depasse pas 50 000 caracteres.
+ * Les evenements LINE_ADD / BLAST_SEND embarquent des PHOTOS en base64 et
+ * depassent couramment cette taille â€” une ecriture en bloc (setValues sur
+ * toute la plage) levait alors Â« Exception: Votre saisie depasse le nombre
+ * maximum de 50000 caracteres autorise par cellule Â» et RIEN n'etait
+ * repare (observe le 27/10).
+ *
+ * D'ou trois precautions :
+ *  - ecriture LIGNE PAR LIGNE, par lots de 200 (quota Apps Script) ;
+ *  - une cellule trop grosse n'est JAMAIS reecrite : on conserve sa valeur
+ *    d'origine (l[6]) â€” le payload reste lisible cote sheet, seule la
+ *    reecriture serait refusee ;
+ *  - une ligne dont une colonne derape est signalee dans le compte rendu,
+ *    plutot que de faire echouer toute la reparation.
+ *
+ * @return {string} compte rendu
+ */
+function reparerEvenements() {
+  const sh = feuille(CONFIG.ONGLETS.EVENEMENTS);
+  const debut = ligneDebutEvenements(sh);
+  const derniere = sh.getLastRow();
+  const n = Math.max(0, derniere - debut + 1);
+
+  // 1. Entete a la bonne largeur (toujours utile, meme sans donnees).
+  sh.getRange(1, 1, 1, COLONNES_EVENEMENTS.length)
+    .setValues([COLONNES_EVENEMENTS]).setFontWeight('bold')
+    .setBackground('#f3f3f3');
+  sh.setFrozenRows(1);
+
+  if (n === 0) {
+    journal('REPARATION evenements : aucune donnee');
+    return 'aucune donnee a realigner';
+  }
+
+  const largeur = Math.max(sh.getLastColumn(), COLONNES_EVENEMENTS.length);
+  const toutes = sh.getRange(debut, 1, n, largeur).getValues();
+  const LIMITE = 49000; // marge sous les 50 000 de Sheets
+
+  let realignees = 0;
+  let conservees = 0;
+  const enEchec = [];
+
+  for (let i = 0; i < toutes.length; i++) {
+    const l = toutes[i];
+    const type = String(l[3] || '');
+    let payload = {};
+    try { payload = JSON.parse(String(l[6] || '{}')); } catch (_) { payload = {}; }
+
+    const num = function (v) {
+      const x = Number(v);
+      return isFinite(x) ? x : '';
+    };
+
+    const ligne = [
+      l[0], l[1], l[2], type, l[4], l[5], l[6],
+      type === 'GPS_UPDATE' ? num(payload.easting) : '',
+      type === 'GPS_UPDATE' ? num(payload.northing) : '',
+      type === 'GPS_UPDATE' ? num(payload.elevation) : '',
+      type === 'POSITION_PERLE' ? num(payload.xbloc) : '',
+      type === 'POSITION_PERLE' ? num(payload.ybloc) : '',
+      type === 'POSITION_PERLE' ? num(payload.zbloc) : '',
+      type === 'MOYENNE_PERLE' ? num(payload.xmoy) : '',
+      type === 'MOYENNE_PERLE' ? num(payload.ymoy) : '',
+      type === 'MOYENNE_PERLE' ? num(payload.zmoy) : '',
+      type === 'MOYENNE_PERLE' ? num(payload.nombre) : '',
+      (type === 'POSITION_PERLE' || type === 'MOYENNE_PERLE')
+        ? String(payload.dt || '') : '',
+    ];
+
+    // Cellule hors limite : on ne reecrit rien pour cette ligne.
+    if (String(ligne[6] || '').length > LIMITE) {
+      conservees++;
+      continue;
+    }
+
+    try {
+      sh.getRange(debut + i, 1, 1, ligne.length).setValues([ligne]);
+      realignees++;
+    } catch (e) {
+      enEchec.push(debut + i + ' (' + (e && e.message ? e.message : e) + ')');
+    }
+
+    // Rendu au quota : on laisse respirer l'execution.
+    if ((i + 1) % 200 === 0) SpreadsheetApp.flush();
+  }
+
+  // Purge des colonnes en trop, seulement si plus personne ne les utilise.
+  if (sh.getLastColumn() > COLONNES_EVENEMENTS.length) {
+    const extra = sh.getRange(1, COLONNES_EVENEMENTS.length + 1, sh.getLastRow(),
+                              sh.getLastColumn() - COLONNES_EVENEMENTS.length)
+                    .getValues();
+    const utilisee = extra.some(function (r) {
+      return r.some(function (v) { return String(v).trim() !== ''; });
+    });
+    if (!utilisee) {
+      sh.deleteColumns(
+        COLONNES_EVENEMENTS.length + 1,
+        sh.getLastColumn() - COLONNES_EVENEMENTS.length
+      );
+    }
+  }
+
+  const rapport = 'REPARATION evenements : ' + realignees + ' ligne(s) ' +
+    'realignee(s), ' + conservees + ' conservee(s) (payload > ' + LIMITE +
+    ' caracteres), ' + enEchec.length + ' en echec' +
+    (enEchec.length ? ' [' + enEchec.slice(0, 5).join(', ') + ']' : '');
+  journal(rapport);
+  Logger.log(rapport);
+  return rapport;
+}
 function migrationExecuter() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const rapport = migrerStructuration(ss, true);

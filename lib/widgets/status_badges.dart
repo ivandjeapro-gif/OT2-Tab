@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -468,85 +469,145 @@ class WifiP2pStatusBadge extends StatelessWidget {
   }
 }
 
-/// Carre sombre (bas de gauche) : echange de donnees avec le serveur local.
+/// Bouton carre sombre (bas gauche) : voyant de la LIAISON ENTRE ENGIN
+/// (BLE / Wi-Fi P2P local) — demande du 28/10, logique clarifiee :
 ///
-/// La fleche s'anime (rotation continue) tant que la session transmet
-/// effectivement des donnees au DT — Wi-Fi ([Session.envoiWifiActif]) ou
-/// BLE ([Session.envoiBleActif]).
-class DataExchangeButton extends StatelessWidget {
+/// - Liaison locale active (DT <-> Excavatrice <-> Spotter) : l'icone fleches
+///   `import_export` tourne sur elle-meme a 360° en rotation fluide continue
+///   et passe au vert.
+/// - Aucune liaison locale : icone statique blanche.
+///
+/// (L'etat Internet/4G est affiche par le bouton de DROITE de la barre :
+/// [SyncCloudIcon]. Le halo neon qui animate ce bouton a ete SUPPRIME —
+/// pas necessaire, il brouillait la lecture des deux voyants.)
+class DataExchangeButton extends StatefulWidget {
   const DataExchangeButton({super.key, this.onPressed, this.session});
 
   final VoidCallback? onPressed;
-
-  /// Session optionnelle : fournie, l'icone s'anime pendant un envoi.
   final Session? session;
 
   @override
-  Widget build(BuildContext context) {
-    final double cote = MiseEnPage.depuis(context).hauteurTicker;
-    final Session? session = this.session;
-    final bool enEnvoi = session != null &&
-        (session.envoiWifiActif || session.envoiBleActif);
-    final Widget icone = enEnvoi
-        ? const _FlecheAnimee()
-        : Icon(Icons.import_export, color: Colors.white, size: cote * 0.48);
-    return Material(
-      color: AppColors.darkSquare,
-      child: InkWell(
-        onTap: onPressed,
-        child: SizedBox(
-          width: cote,
-          height: cote,
-          child: icone,
-        ),
-      ),
-    );
-  }
+  State<DataExchangeButton> createState() => _DataExchangeButtonState();
 }
 
-/// Fleche d'echange en rotation continue : marque visuellement qu'un envoi
-/// est en cours (REQ-007), sans casser la lisibilite de l'icone.
-class _FlecheAnimee extends StatefulWidget {
-  const _FlecheAnimee();
+class _DataExchangeButtonState extends State<DataExchangeButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _rotation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  );
 
   @override
-  State<_FlecheAnimee> createState() => _FlecheAnimeeState();
-}
+  void initState() {
+    super.initState();
+    widget.session?.addListener(_actualiser);
+    _actualiser();
+  }
 
-class _FlecheAnimeeState extends State<_FlecheAnimee>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controleur = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat();
+  @override
+  void didUpdateWidget(covariant DataExchangeButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session != widget.session) {
+      oldWidget.session?.removeListener(_actualiser);
+      widget.session?.addListener(_actualiser);
+    }
+    _actualiser();
+  }
+
+  bool _estConnecteLocal(Session? s) {
+    if (s == null) return false;
+    return s.liensBle > 0 ||
+        s.liensWifi > 0 ||
+        s.dtConnecte.isNotEmpty ||
+        s.positionsPerle > 0 ||
+        s.etatBle == EtatCouche.connecte ||
+        s.etatWifiP2p == EtatCouche.connecte ||
+        s.masterConnected;
+  }
+
+  void _actualiser() {
+    final Session? s = widget.session;
+    final bool local = _estConnecteLocal(s);
+
+    if (local) {
+      if (!_rotation.isAnimating) _rotation.repeat();
+    } else {
+      if (_rotation.isAnimating) {
+        _rotation.stop();
+        _rotation.value = 0;
+      }
+    }
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
-    _controleur.dispose();
+    widget.session?.removeListener(_actualiser);
+    _rotation.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final double cote = MiseEnPage.depuis(context).hauteurTicker;
+
+    // Synchronisation directe des animations dans le cycle de build :
+    // garantit le demarrage immediat sans dependre d'un appel asynchrone.
+    final bool aLocal = _estConnecteLocal(widget.session);
+
+    if (aLocal && !_rotation.isAnimating) {
+      _rotation.repeat();
+    } else if (!aLocal && _rotation.isAnimating) {
+      _rotation.stop();
+      _rotation.value = 0;
+    }
+
     return AnimatedBuilder(
-      animation: _controleur,
-      builder: (context, child) => Transform.rotate(
-        angle: _controleur.value * 2 * 3.14159,
-        child: child,
-      ),
-      child: Icon(Icons.import_export, color: Colors.white, size: cote * 0.48),
+      animation: _rotation,
+      builder: (context, child) {
+        final Color couleur = aLocal ? AppColors.green : Colors.white;
+
+        final Widget icone = Icon(
+          Icons.import_export,
+          color: couleur,
+          size: (cote * 0.52).clamp(22.0, 28.0),
+        );
+
+        final Widget iconeTournante = aLocal
+            ? Transform.rotate(
+                angle: _rotation.value * 2 * math.pi,
+                child: icone,
+              )
+            : icone;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onPressed,
+            child: Container(
+              width: cote,
+              height: cote,
+              decoration: const BoxDecoration(color: AppColors.darkSquare),
+              alignment: Alignment.center,
+              child: iconeTournante,
+            ),
+          ),
+        );
+      },
     );
   }
 }
 
-/// Carre blanc (bas de droite) : icone d'echange de donnees avec le serveur
-/// local apres connexion au point d'accès.
+/// Carre blanc (bas droite) : voyant de la CONNEXION INTERNET (4G / Wi-Fi)
+/// vers le serveur cloud — demande du 28/10 : le bouton de droite porte
+/// l'etat Internet, celui de gauche ([DataExchangeButton]) l'etat liaison
+/// entre engins.
 ///
 /// Pendant une passe de synchronisation serveur ([Session.synchroActive],
 /// déclenchée dès que la 4G est disponible), le nuage s'anime : rotation
-/// douce du nuage + flèche de téléchargement. Hors synchro, il retrouve
-/// son etat statique (nuage vert « done » ou nuage coupé).
+/// douce du nuage + flèche de téléchargement. Hors synchro : nuage vert
+/// « done » si Internet est joignable ([Session.gsmOnline] / `etat4G`),
+/// nuage barré sinon.
 class SyncCloudIcon extends StatefulWidget {
   const SyncCloudIcon({super.key, required this.session});
 
@@ -604,7 +665,12 @@ class _SyncCloudIconState extends State<SyncCloudIcon>
   @override
   Widget build(BuildContext context) {
     final double cote = MiseEnPage.depuis(context).hauteurTicker;
-    final EtatCouche etat = widget.session.etatWifiDevice;
+    // Voyant CONNEXION INTERNET (28/10) : l'etat vient de la connectivite
+    // reelle (4G/Wi-Fi vers le cloud : `gsmOnline` / `etat4G`), pas du
+    // reseau local - qui est porte par le bouton de gauche.
+    final bool internet =
+        widget.session.gsmOnline ||
+        widget.session.etat4G == EtatCouche.connecte;
     final bool enSynchro = widget.session.synchroActive;
     final Icon icone;
     if (enSynchro) {
@@ -615,13 +681,9 @@ class _SyncCloudIconState extends State<SyncCloudIcon>
       );
     } else {
       icone = Icon(
-        etat == EtatCouche.connecte
-            ? Icons.cloud_done_outlined
-            : Icons.cloud_off_outlined,
+        internet ? Icons.cloud_done_outlined : Icons.cloud_off_outlined,
         size: cote * 0.55,
-        color: etat == EtatCouche.connecte
-            ? AppColors.green
-            : AppColors.darkSquare,
+        color: internet ? AppColors.green : AppColors.darkSquare,
       );
     }
     return GestureDetector(

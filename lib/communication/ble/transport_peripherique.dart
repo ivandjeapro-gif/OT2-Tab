@@ -58,26 +58,117 @@ class TransportBlePeripherique implements TransportBle {
 
   final StreamController<LienBle> _entrants =
       StreamController<LienBle>.broadcast();
+  /// Flux de l'etat de l'ADAPTATEUR Bluetooth local (vrai = allume).
+  final StreamController<bool> _pile = StreamController<bool>.broadcast();
+  Timer? _surveillePile;
+  bool _surveillanceArmee = false;
+  bool _dernierEtatPile = true;
+
+  /// Vrai des que [demarrerPublicite] a ete demandee et tant que
+  /// [arreterPublicite] ne l'a pas annulee : c'est ce que le chien de garde
+  /// compare a la realite de la pile.
+  bool _publiciteVoulue = false;
   final Map<String, LienPeripherique> _liens =
       <String, LienPeripherique>{};
   bool _prete = false;
 
   @override
-  Stream<bool> get etatPile async* {
-    yield true;
+  Stream<bool> get etatPile {
+    _demarrerSurveillancePile();
+    return _pile.stream;
+  }
+
+  /// Surveille l'adaptateur Bluetooth, et separement notre publicite.
+  ///
+  /// POURQUOI CETTE REECRITURE (29/10). La version precedente sondait
+  /// `BlePeripheral.isAdvertising()` et prenait sa reponse pour l'etat de la
+  /// pile. Or ce getter ne lit pas l'adaptateur : cote Android il renvoie un
+  /// simple drapeau que le plugin met a vrai au demarrage de la publicite et
+  /// a faux a son arret. La boucle se mordait donc la queue — la publicite
+  /// n'etait relancee qu'a la transition `false -> true`, transition que
+  /// SEULE une publicite deja en cours pouvait produire. Une fois
+  /// l'advertising tombe (coupure du Bluetooth, reinstallation de l'APK),
+  /// plus rien ne le relevait : l'excavatrice affichait « BLE actif, aucun
+  /// DT » et restait muette pendant que le DT scannait dans le vide.
+  ///
+  /// Deux mecanismes distincts, parce que ce sont deux pannes distinctes :
+  /// - `setBleStateChangeCallback`, alimente par le `BroadcastReceiver`
+  ///   `ACTION_STATE_CHANGED` du plugin, donne le VRAI etat de l'adaptateur ;
+  /// - un chien de garde verifie que notre publicite tourne encore, car
+  ///   Android peut l'arreter sans que l'adaptateur bouge.
+  void _demarrerSurveillancePile() {
+    if (_surveillanceArmee) return;
+    _surveillanceArmee = true;
+    periph.BlePeripheral.setBleStateChangeCallback(_surEtatAdaptateur);
+    _surveillePile = Timer.periodic(const Duration(seconds: 10), (_) async {
+      // Rien a surveiller tant que personne n'a demande la publicite.
+      if (!_publiciteVoulue || !_dernierEtatPile) return;
+      bool annonce;
+      try {
+        annonce = await periph.BlePeripheral.isAdvertising() ?? false;
+      } catch (_) {
+        annonce = false;
+      }
+      if (annonce) return;
+      // Publicite morte alors que l'adaptateur est allume : c'est l'etat
+      // « zombie » observe apres une reinstallation de l'APK. On la relance
+      // ici au lieu d'attendre un redemarrage de la tablette.
+      debugPrint('OREBLE publicite arretee sans coupure BT - relance');
+      try {
+        await demarrerPublicite();
+      } catch (e) {
+        debugPrint('OREBLE relance de la publicite impossible : $e');
+      }
+    });
+  }
+
+  /// L'adaptateur Bluetooth vient de changer d'etat.
+  void _surEtatAdaptateur(bool active) {
+    if (active == _dernierEtatPile) return;
+    _dernierEtatPile = active;
+    if (!active) {
+      // Android DETRUIT le GATT server a l'extinction du Bluetooth : le
+      // service, ses caracteristiques et les liens ouverts n'existent plus.
+      // On l'oublie pour que `preparer()` reconstruise tout au retour. Sans
+      // cet oubli, `preparer()` sortait sur `_prete` et la publicite
+      // repartait au-dessus d'un serveur GATT vide : les DT voyaient bien
+      // l'annonce mais aucune connexion n'aboutissait.
+      _prete = false;
+      for (final String id in List<String>.of(_liens.keys)) {
+        _fermerLien(id);
+      }
+    }
+    debugPrint('OREBLE adaptateur ${active ? 'allume' : 'eteint'}');
+    _pile.add(active);
   }
 
   /// Prépare le GATT server : service + caractéristiques, callbacks. A
   /// appeler une fois avant [demarrerPublicite].
   Future<void> preparer() async {
     if (_prete) return;
+    // `initialize()` rouvre le GATT server. On la rappelle a chaque
+    // reconstruction (apres une coupure du Bluetooth, `_prete` est remis a
+    // faux par [_surEtatAdaptateur]) : c'est la seule facon de retrouver un
+    // serveur vivant, le plugin ne le rouvrant jamais de lui-meme.
     await periph.BlePeripheral.initialize();
     periph.BlePeripheral.setServiceAddedCallback(
         (String serviceId, String? erreur) {
+      // Journalise, ne leve pas : une exception depuis un callback de plugin
+      // ne remonte a personne et fait seulement tomber le gestionnaire.
       if (erreur != null) {
-        throw StateError('Service GATT refuse : $erreur');
+        debugPrint('OREBLE service GATT refuse : $erreur');
       }
     });
+    // PAS de `clearServices()` ici.
+    //
+    // `initialize()` vient d'ouvrir un serveur GATT NEUF, donc vide : il n'y
+    // a rien a nettoyer. Et surtout, `addService` est ASYNCHRONE cote Android
+    // (le plugin rend la main aussitot, la confirmation arrive par
+    // `onServiceAdded`) : enchainer un nettoyage et un ajout les fait courir
+    // l'un contre l'autre, et le service peut etre efface apres avoir ete
+    // ajoute. Le serveur reste alors sans service pendant que la publicite
+    // continue d'annoncer l'UUID — le DT voit l'excavatrice, s'y connecte et
+    // n'obtient jamais de reponse.
     await periph.BlePeripheral.addService(
       periph.BleService(
         uuid: serviceUuid,
@@ -136,11 +227,26 @@ class TransportBlePeripherique implements TransportBle {
         if (!connecte) _fermerLien(deviceId);
       },
     );
+    // CE QUE LE SERVEUR PORTE REELLEMENT.
+    //
+    // L'advertisement annonce l'UUID du service parce qu'on le lui passe en
+    // parametre, pas parce que le service existe : les deux sont
+    // independants. Sans cette trace, un serveur vide est indiscernable d'un
+    // serveur correct vu du journal — c'est precisement ce qui a coute une
+    // soiree de diagnostic (29/10).
+    try {
+      final List<String> services = await periph.BlePeripheral.getServices();
+      debugPrint('OREBLE services GATT enregistres : '
+          '${services.isEmpty ? 'AUCUN' : services.join(', ')}');
+    } catch (e) {
+      debugPrint('OREBLE impossible de lire les services GATT : $e');
+    }
     _prete = true;
   }
 
   /// Démarre l'advertising : c'est ce qui rend TAB 2 visible des TAB 3.
   Future<void> demarrerPublicite() async {
+    _publiciteVoulue = true;
     await preparer();
     // Le paquet BLE legacy (1M PHY) est strictement limite a 31 octets.
     // L'UUID 128 bits prend deja 18 octets (1 len + 1 type + 16 data),
@@ -155,8 +261,10 @@ class TransportBlePeripherique implements TransportBle {
     );
   }
 
-  Future<void> arreterPublicite() =>
-      periph.BlePeripheral.stopAdvertising();
+  Future<void> arreterPublicite() {
+    _publiciteVoulue = false;
+    return periph.BlePeripheral.stopAdvertising();
+  }
 
   void _livrer(String deviceId, Uint8List octets) {
     // Un message du client crée le lien s'il n'existe pas encore : le
@@ -205,6 +313,9 @@ class TransportBlePeripherique implements TransportBle {
 
   @override
   Future<void> arreter() async {
+    _surveillePile?.cancel();
+    _surveillePile = null;
+    _surveillanceArmee = false;
     await arreterPublicite();
     for (final String id in List<String>.of(_liens.keys)) {
       _fermerLien(id);

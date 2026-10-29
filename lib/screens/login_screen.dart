@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:permission_handler/permission_handler.dart';
+import '../communication/ble/permissions_ble.dart';
 import '../data/base_locale.dart';
 import '../models/models.dart';
 import '../state/session.dart';
@@ -40,9 +42,32 @@ class _LoginScreenState extends State<LoginScreen> {
   /// Équipe choisie (personnes : SPOT). Le menu 2 liste les noms de l'equipe.
   String? _equipe;
 
+  /// Diagnostic des permissions BLE (28/10) : une reinstall efface les
+  /// accords runtime Android 12+ et la couche BLE echouait alors
+  /// SILENCIEUSEMENT (couche crue demarree, rien ne circulait). Verifie des
+  /// l'ecran de connexion et affiche un bandeau d'avertissement avec bouton
+  /// vers les reglages systeme si un refus est detecte.
+  bool _permBleOk = true;
+
+  Future<void> _verifierPermissionsBle() async {
+    // Reflection du controle de `PermissionsBle.demander()` : meme regle de
+    // validite ((scan && connect) || (emettre && connect)), sans declencher
+    // de boite de dialogue — ici on ne fait que DIAGNOSTIQUER.
+    try {
+      final bool scan = await PermissionsBle.statutScan;
+      final bool connecter = await PermissionsBle.statutConnect;
+      final bool emettre = await PermissionsBle.statutEmettre;
+      final bool ok = (scan && connecter) || (emettre && connecter);
+      if (mounted && ok != _permBleOk) setState(() => _permBleOk = ok);
+    } catch (_) {
+      // Plateforme sans modele de permissions : on ne bloque rien.
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _verifierPermissionsBle();
     final List<Profil> profils = widget.session.base.profilsActifs;
     // Verrouillage de role (PARAMETRES.md) : si cette tablette a deja porte
     // un role (`role_verrouille`), on le re-selectionne au demarrage — l'oper
@@ -420,6 +445,44 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            // Bandeau d'alerte permissions BLE (28/10) : visible AVANT connexion,
+            // la couche BLE echouait silencieusement quand les accords runtime
+            // avaient disparu apres une reinstall.
+            if (!_permBleOk)
+              Material(
+                color: const Color(0xFFB3541E),
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.bluetooth_disabled,
+                            color: Colors.white, size: 22),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'Permissions Bluetooth refusees : la liaison entre engins sera inactive. Appuyez pour les accorder dans les reglages.',
+                            style: TextStyle(color: Colors.white, fontSize: 13),
+                          ),
+                        ),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: () async {
+                            await openAppSettings();
+                            // Re-diagnostic au retour des reglages.
+                            await _verifierPermissionsBle();
+                          },
+                          child: const Text('REGLAGES'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: LayoutBuilder(
                 builder: (context, contraintesPage) {

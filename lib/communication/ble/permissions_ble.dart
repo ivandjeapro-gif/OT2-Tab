@@ -26,6 +26,36 @@ class PermissionsBle {
   /// (iOS a son propre modele de popup, gere par les plugins BLE eux-memes).
   static bool get _estAndroid => !kIsWeb && Platform.isAndroid;
 
+  /// Statuts individuels pour le DIAGNOSTIC sans boite de dialogue (28/10) :
+  /// l'ecran de connexion verifie l'etat des accords runtime des l'ouverture
+  /// et affiche un bandeau si un refus est detecte, sans rien demander.
+  static Future<bool> get statutScan async {
+    if (!_estAndroid) return true;
+    try {
+      return await Permission.bluetoothScan.isGranted;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<bool> get statutConnect async {
+    if (!_estAndroid) return true;
+    try {
+      return await Permission.bluetoothConnect.isGranted;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<bool> get statutEmettre async {
+    if (!_estAndroid) return true;
+    try {
+      return await Permission.bluetoothAdvertise.isGranted;
+    } catch (_) {
+      return true;
+    }
+  }
+
   /// Demande les permissions BLE et rend `true` si tout ce qui est necessaire
   /// est accorde.
   ///
@@ -40,43 +70,35 @@ class PermissionsBle {
   static Future<bool> demander() async {
     if (!_estAndroid) return true;
     try {
-      // Un lot unique : Android presente une seule boite de dialogue pour
-      // tout le groupe « Appareils à proximité » (API 31+).
-      final Map<Permission, PermissionStatus> resultats =
-          await <Permission>[
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.bluetoothAdvertise,
-        Permission.locationWhenInUse,
-      ].request();
+      // Verifie d'abord si les permissions sont deja accordees :
+      // appeler `.request()` sur des permissions deja accordees peut renvoyer
+      // un resultat vide ou `denied` sur certaines versions d'Android si
+      // aucune boite de dialogue n'est montree.
+      bool scan = await Permission.bluetoothScan.isGranted;
+      bool connecter = await Permission.bluetoothConnect.isGranted;
+      bool emettre = await Permission.bluetoothAdvertise.isGranted;
 
-      // Ce qui doit etre accorde pour que la couche fonctionne. On tolere
-      // `locationWhenInUse` absent : sur Android >= 12 avec le drapeau
-      // `neverForLocation`, le scan fonctionne sans localisation.
-      final bool scan = resultats[Permission.bluetoothScan]?.isGranted ?? false;
-      final bool connecter =
-          resultats[Permission.bluetoothConnect]?.isGranted ?? false;
-      final bool emettre =
-          resultats[Permission.bluetoothAdvertise]?.isGranted ?? false;
+      if (!connecter || (!scan && !emettre)) {
+        final Map<Permission, PermissionStatus> resultats =
+            await <Permission>[
+          Permission.bluetoothScan,
+          Permission.bluetoothConnect,
+          Permission.bluetoothAdvertise,
+          Permission.locationWhenInUse,
+        ].request();
 
-      // Sur Android >= 12 :
-      // - Une excavatrice a besoin de `emettre` (advertise) et `connecter`.
-      // - Un DT/Spotter a besoin de `scan` et `connecter`.
-      // Exiger les trois a la fois bloque un appareil dont l'OS n'accorde
-      // que les permissions utiles a son role.
-      if (scan || connecter || emettre) {
-        return (scan && connecter) || (emettre && connecter);
+        scan = resultats[Permission.bluetoothScan]?.isGranted ?? scan;
+        connecter =
+            resultats[Permission.bluetoothConnect]?.isGranted ?? connecter;
+        emettre =
+            resultats[Permission.bluetoothAdvertise]?.isGranted ?? emettre;
       }
 
-      // Aucune des trois accordee : soit Android < 12 (les permissions
-      // dediees n'y existent pas), soit refus franc. On distingue avec la
-      // localisation, seule voie du scan sur les anciennes versions.
-      final bool localisation =
-          resultats[Permission.locationWhenInUse]?.isGranted ?? false;
-      return localisation;
-    } catch (_) {
-      // Plugin absent (desktop, tests) : on laisse la couche tenter sa
-      // chance plutot que de bloquer l'application.
+      final bool ok = (scan && connecter) || (emettre && connecter);
+      debugPrint('[PERM_BLE] scan=$scan, connect=$connecter, emettre=$emettre -> $ok');
+      return ok;
+    } catch (e) {
+      debugPrint('[PERM_BLE] exception : $e');
       return true;
     }
   }

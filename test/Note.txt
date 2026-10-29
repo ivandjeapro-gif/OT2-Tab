@@ -32,9 +32,11 @@ INFORMATION BACKEND :
 
 Url server : https://script.google.com/macros/s/AKfycbwwE_oFNpVeZmXuJT6qL9yUGBW3Xn-930tEtfnH8k-hV-bBkyjH8b5VOA4aqgo_2UH2GA/exec
 
-Sheet url : 1U1hU4uOAwAhWyFOD6LuLgHfbRAyTU1TxxjD_vnF0rks
+Sheet 1 url : 1U1hU4uOAwAhWyFOD6LuLgHfbRAyTU1TxxjD_vnF0rks
 
-Google Drive : https://drive.google.com/drive/folders/1nOTs7uWhbtQb3XeZ9vhDRMFBB837KJ2B?usp=sharing
+Sheet 2 url : 1VKapfCY1HO5HoOdiLiQtIX_msTXqW3SGufLcwRRmALo
+
+Google Drive : https://drive.google.com/drive/folders/1e7Uro5o9_Mfta5xRMjNYB7hVzpaaO2Up?usp=drive_link
 
 Tokens : 
 

@@ -264,7 +264,9 @@ class _CartePhoto extends StatelessWidget {
               ),
             ),
             Text(
-              'DT ${ligne.dt} n${ligne.idDt} - ${ligne.time}',
+              'DT ${ligne.dt} n${ligne.idDt} - ${ligne.time}'
+              '${ligne.excavator.isEmpty ? '' : ' - EX ${ligne.excavator} '
+                  'n${ligne.idExcavator}'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(

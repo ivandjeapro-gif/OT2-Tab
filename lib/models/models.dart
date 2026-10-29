@@ -68,6 +68,8 @@ class LigneBlast {
     required this.time,
     required this.dt,
     required this.idDt,
+    this.excavator = '',
+    this.idExcavator = '',
     this.hasPicture = false,
     this.photo,
     this.comment = '',
@@ -81,6 +83,17 @@ class LigneBlast {
   /// Numero du DT, choisi dans le lot du type. Depend de [dt] : un numero
   /// n'existe que dans le lot de son type.
   final String idDt;
+
+  /// Famille de l'excavatrice qui charge ce voyage (EX 1250, PC 2000...),
+  /// choisie dans la premiere liste Excavator du formulaire spotter.
+  ///
+  /// Vide sur les lignes saisies avant l'ajout du champ (29/10) : le tableau
+  /// et le reseau doivent donc tolerer l'absence, jamais la supposer.
+  final String excavator;
+
+  /// Numero de l'excavatrice dans le lot de [excavator]. Meme dependance que
+  /// [idDt] vis-a-vis de [dt] : un numero n'existe que dans sa famille.
+  final String idExcavator;
 
   final bool hasPicture;
 

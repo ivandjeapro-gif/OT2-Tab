@@ -211,12 +211,19 @@ class RouteReseau(private val context: Context) {
      * cellulaire** : si la connexion aboutit, la route existe reellement.
      * C'est la seule mesure qui corresponde au terrain.
      *
-     * @param hote nom d'hote joint par TCP (port 53 : jamais filtre).
-     * @param delaiMs delai maximal ; au-dela, on considere la route morte.
+     * @param hote nom d'hote joint par TCP.
+     * @param ports ports essayes dans l'ordre jusqu'au premier qui passe.
+     * @param delaiMs delai maximal par port ; au-dela, on considere la route morte.
+     *
+     * CORRECTIF 29/10 : le port 53 de `8.8.8.8` est REFUSE par certains
+     * operateurs sur leurs APN mobiles (ECONNREFUSED malgre une 4G saine,
+     * observe sur le terrain). La sonde declarait donc morte une 4G qui
+     * servait pourtant le trafic HTTPS. On sonde d'abord 443 (`dns.google`,
+     * le meme port que la synchro, donc un verdict fiable), puis 53 et 853.
      */
     fun sondeCellulaire(
-        hote: String = "8.8.8.8",
-        port: Int = 53,
+        hote: String = "dns.google",
+        ports: List<Int> = listOf(443, 53, 853),
         delaiMs: Int = 4000,
     ): Boolean {
         val c = cm ?: return false
@@ -228,19 +235,34 @@ class RouteReseau(private val context: Context) {
             Log.i(TAG, "SONDE 4G : aucun reseau cellulaire declare")
             return false
         }
+        // IP resolue une seule fois : si la resolution passe par le Wi-Fi, le
+        // `bindSocket` doit porter sur une adresse deja connue pour que la
+        // sonde reste veritablement cantonnee au reseau cellulaire.
+        val adresse = try {
+            java.net.InetAddress.getByName(hote)
+        } catch (_: Exception) {
+            null
+        }
         for (n in specs) {
-            try {
-                // `bindSocket` force CE paquet a sortir par CE reseau : sans
-                // lui, Android pourrait router la sonde par le Wi-Fi et
-                // repondre « la 4G marche » alors qu'elle est coupee.
-                val socket = java.net.Socket()
-                n.bindSocket(socket)
-                socket.connect(java.net.InetSocketAddress(hote, port), delaiMs)
-                socket.close()
-                Log.i(TAG, "SONDE 4G : OK sur $n")
-                return true
-            } catch (e: Exception) {
-                Log.i(TAG, "SONDE 4G : echec sur $n (${e.message})")
+            for (port in ports) {
+                try {
+                    // `bindSocket` force CE paquet a sortir par CE reseau : sans
+                    // lui, Android pourrait router la sonde par le Wi-Fi et
+                    // repondre « la 4G marche » alors qu'elle est coupee.
+                    val socket = java.net.Socket()
+                    n.bindSocket(socket)
+                    val cible = if (adresse != null) {
+                        java.net.InetSocketAddress(adresse, port)
+                    } else {
+                        java.net.InetSocketAddress(hote, port)
+                    }
+                    socket.connect(cible, delaiMs)
+                    socket.close()
+                    Log.i(TAG, "SONDE 4G : OK sur $n port $port")
+                    return true
+                } catch (e: Exception) {
+                    Log.i(TAG, "SONDE 4G : echec sur $n port $port (${e.message})")
+                }
             }
         }
         return false

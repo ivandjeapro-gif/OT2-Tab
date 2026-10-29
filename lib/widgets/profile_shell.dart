@@ -29,9 +29,11 @@ class ProfileShell extends StatelessWidget {
   final ProfilVoyants? voyants;
 
   /// Widget affiche a l'extremite droite de la barre de notification.
-  /// Par defaut, le nuage [SyncCloudIcon] (synchro 4G serveur).
-  /// Sur l'excavatrice, remplace par le bouton [BoutonEnvoiManuel] car la pelle
-  /// ne communique pas directement avec le cloud.
+  /// Par defaut, le nuage [SyncCloudIcon] : voyant CONNEXION INTERNET (4G/Wi-Fi)
+  /// vers le serveur cloud (logique du 28/10 : gauche = liaison engins via
+  /// [DataExchangeButton], droite = Internet). Sur l'excavatrice, remplace par
+  /// le bouton [BoutonEnvoiManuel] car la pelle ne communique pas directement
+  /// avec le cloud.
   final Widget? bottomTrailing;
 
   Future<void> _confirmerSortie(BuildContext context) async {
@@ -98,9 +100,9 @@ class ProfileShell extends StatelessWidget {
               Expanded(child: body),
               Row(
                 children: [
-                  // Fleche d'echange a gauche : animee pendant un envoi
-                  // effectif vers le DT (Wi-Fi ou BLE). Ouvre la supervision
-                  // reseau (CDC §21/§22).
+                  // Fleche a gauche : voyant LIAISON ENTRE ENGIN (BLE/Wi-Fi
+                  // local) - tourne en vert quand un lien est actif. Ouvre
+                  // la supervision reseau (CDC §21/§22).
                   DataExchangeButton(
                     onPressed: () =>
                         SupervisionReseau.montrer(context, session),
@@ -109,7 +111,8 @@ class ProfileShell extends StatelessWidget {
                   Expanded(
                     child: NotificationTicker(session: session),
                   ),
-                  // Extremite droite : nuage serveur (DT/spotter) ou envoi manuel (excavatrice).
+                  // Extremite droite : voyant CONNEXION INTERNET - nuage
+                  // serveur (DT/spotter) ou envoi manuel (excavatrice).
                   bottomTrailing ?? SyncCloudIcon(session: session),
                 ],
               ),
