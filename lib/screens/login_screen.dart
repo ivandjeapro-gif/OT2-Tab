@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../communication/ble/permissions_ble.dart';
 import '../data/base_locale.dart';
+import '../data/provisionnement.dart';
 import '../data/verrou_role.dart';
 import '../models/models.dart';
 import '../state/session.dart';
@@ -48,6 +49,14 @@ class _LoginScreenState extends State<LoginScreen> {
   /// Vrai quand le role est impose par le parc (serial -> role). L'ecran
   /// n'autorise alors AUCUN changement de role (fix 30/10).
   bool _verrouMateriel = false;
+
+  /// Role fige par le provisionnement du SaaS (null = mode libre).
+  /// Voir lib/data/provisionnement.dart : le SaaS depose un JSON dans le
+  /// dossier prive de l'app, l'app le lit au demarrage.
+  String? _roleProvisionne;
+
+  /// Diagnostic temporaire affiche sous le titre (a retirer en prod).
+  String? _diagProvision;
 
   /// Diagnostic des permissions BLE (28/10) : une reinstall efface les
   /// accords runtime Android 12+ et la couche BLE echouait alors
@@ -94,14 +103,124 @@ class _LoginScreenState extends State<LoginScreen> {
             : profils.first);
     // Application asynchrone du verrou materiel (le premier build affiche
     // provisoirement le profil SQLite, puis il est corrige).
-    unawaited(_appliquerVerrouMateriel(profils));
+    // SEQUENCE (fix 30/10) : le provisionnement d'abord, le verrou materiel
+    // ensuite. Les lancer en parallele laissait le verrou ecraser le role
+    // provisionne selon l'ordre d'arrivee des await.
+    unawaited(_initialiserRole(profils));
     widget.session.addListener(_surSession);
   }
 
   /// Applique le verrou materiel (serial -> role) si la tablette est
   /// affectee. Fixe `_profil` sur ce role et memorise le verrou en base
   /// pour que le reste de l'app le voie.
+  /// Applique le provisionnement du SaaS (priorite maximale, 30/10).
+  ///
+  /// Le SaaS depose `files/provisionnement.json` apres l'installation. Ce
+  /// fichier porte le role fige de la tablette. Quand il est present :
+  ///   - le profil correspondant est selectionne et verrouille ;
+  ///   - les autres profils restent VISIBLES mais grises ;
+  ///   - tout changement est refuse.
+  ///
+  /// Un provisionnement invalide (format, serial) est ignore : l'app reste en
+  /// mode libre plutot que de figer un role errone.
+  /// Chaine d'initialisation du role, dans l'ordre :
+  ///   1. provisionnement SaaS (prioritaire, fichier JSON) ;
+  ///   2. verrou materiel (serial -> role), seulement si 1 n'a rien fixe.
+  Future<void> _initialiserRole(List<Profil> profils) async {
+    await _appliquerProvisionnement(profils);
+    await _appliquerVerrouMateriel(profils);
+  }
+  /// Libelle lisible d'un code de role (pour les messages de verrouillage).
+  String _libelleRole(String code) {
+    switch (code) {
+      case 'ROLE_TAB3':
+        return 'Excavator';
+      case 'ROLE_TAB2':
+        return 'Chauffeur DT';
+      case 'ROLE_TAB1':
+        return 'Spotter';
+      default:
+        return code;
+    }
+  }
+  Future<void> _appliquerProvisionnement(List<Profil> profils) async {
+    Provisionnement? p;
+    String erreur = '';
+    try {
+      p = await Provisionnement.charger()
+          .timeout(const Duration(seconds: 8));
+    } catch (e) {
+      erreur = '$e';
+    }
+    if (mounted) {
+      setState(() {
+        _diagProvision = erreur.isNotEmpty
+            ? 'ERREUR: $erreur'
+            : p == null
+                ? 'NULL | ${Provisionnement.diagnostic}'
+                : 'role=${p.role} gele=${p.gele} | ${Provisionnement.diagnostic}';
+      });
+    }
+    if (p == null) return;
+    final Provisionnement prov = p;
+    // La garde serial est appliquee a la LECTURE (Provisionnement.charger),
+    // pas ici : comparer p.serial a lui-meme etait toujours vrai et n'apportait
+    // rien (fix 30/10).
+    // On memorise le role AVANT le premier frame utile : le verrou doit etre
+    // pose des l'affichage, sinon l'ecran reste sur le profil memorise en
+    // base (constate : DT affiche sur une tablette provisionnee Excavatrice).
+    if (prov.gele) {
+      await widget.session.base.majMeta('role_verrouille', prov.role);
+    }
+    if (!mounted) return;
+    final List<Profil> source =
+        profils.isEmpty ? widget.session.base.profilsActifs : profils;
+    Profil? impose;
+    for (final Profil x in source) {
+      if (x.roleCdc == prov.role) {
+        impose = x;
+        break;
+      }
+    }
+    setState(() {
+      _roleProvisionne = prov.gele ? prov.role : null;
+      _diagProvision = 'role=${prov.role} gele=${prov.gele} nb=${source.length} | '
+          '${Provisionnement.diagnostic}'
+          '${source.length} trouve=${impose?.libelle ?? 'AUCUN'}';
+      if (impose != null) {
+        _profil = impose;
+        _id = null;
+        _name = null;
+      }
+    });
+  }
   Future<void> _appliquerVerrouMateriel(List<Profil> profils) async {
+    // PROVISIONNEMENT PRIORITAIRE (fix 30/10). Le role vient du fichier pousse
+    // par le SaaS ; la table serial -> role ne sert QUE si aucun fichier n'a
+    // ete trouve. Sans cette sortie, la table forcait « DT » sur une tablette
+    // pourtant provisionnee Excavatrice (constate en terrain).
+    if (Provisionnement.actif || _roleProvisionne != null) {
+      return;
+    }
+    // Le PROVISIONNEMENT PRIME (fix 30/10) : si un fichier a deja fixe le
+    // role, le verrou materiel ne doit pas l'ecraser. Sans cette garde, la
+    // table serial->role (qui contient encore l'ancienne affectation)
+    // remettait « Chauffeur DT » apres le provisionnement.
+    if (_roleProvisionne != null) return;
+    // Coherence du parc : un role attribue a deux tablettes casserait la
+    // chaine BLE (deux clients ou deux serveurs). On le signale une fois.
+    final List<String> doublons = VerrouRole.verifierCoherence();
+    if (doublons.isNotEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFFB3541E),
+          content: Text(
+            'Configuration du parc invalide : ${doublons.join(', ')}. '
+            'Un seul role de chaque type est autorise.',
+          ),
+        ),
+      );
+    }
     final String? role = await VerrouRole.roleImpose();
     if (role == null) return;
     // Sans referentiels charges (demarrage hors ligne), on memorise quand
@@ -160,6 +279,24 @@ class _LoginScreenState extends State<LoginScreen> {
     // VERROU MATERIEL : aucune exception, aucune confirmation. Une tablette
     // affectee a un role dans `VerrouRole.affectations` ne peut PAS en sortir
     // (fix 30/10). C'est ce qui garantit la stabilite du parc.
+    // VERROU DUR (fix 30/10) : des qu'un provisionnement gele est lu, AUCUNE
+    // autre selection n'est possible. On ne depend plus de _verrouMateriel`r
+    // (table serial), qui echouait silencieusement quand le canal natif ne
+    // repondait pas.
+    if (_roleProvisionne != null) {
+      if (profil.roleCdc != _roleProvisionne) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFFB3541E),
+            content: Text(
+              'Tablette verrouillee : seul le profil '
+              '${_libelleRole(_roleProvisionne!)} est autorise.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     if (_verrouMateriel) {
       if (profil.roleCdc != _profil?.roleCdc) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -432,6 +569,7 @@ class _LoginScreenState extends State<LoginScreen> {
       surChangement: _choisirProfil,
       mise: mise,
       compactPortrait: MiseEnPage.estCompactPortrait(context),
+      roleImpose: _roleProvisionne,
     );
     // Serveur final : TOUS les profils ont DEUX menus dependants, servis
     // par la base — jamais par le code :
@@ -506,6 +644,20 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            // DIAGNOSTIC TEMPORAIRE DU PROVISIONNEMENT (a retirer).
+            if (_diagProvision != null)
+              Container(
+                width: double.infinity,
+                color: const Color(0xFFFFE9B8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Text(
+                  'DIAG PROVISION: $_diagProvision',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 13, color: Color(0xFF6B4A00)),
+                ),
+              ),
             // Bandeau d'alerte permissions BLE (28/10) : visible AVANT connexion,
             // la couche BLE echouait silencieusement quand les accords runtime
             // avaient disparu apres une reinstall.
@@ -772,6 +924,7 @@ class _ProfilePicker extends StatelessWidget {
     required this.surChangement,
     required this.mise,
     this.compactPortrait = false,
+    this.roleImpose,
   });
 
   /// Profils proposes, dans l'ordre de la table `profils`.
@@ -780,6 +933,9 @@ class _ProfilePicker extends StatelessWidget {
   final ValueChanged<Profil> surChangement;
   final MiseEnPage mise;
   final bool compactPortrait;
+
+  /// Role impose par le provisionnement de la tablette (null = mode libre).
+  final String? roleImpose;
 
   @override
   Widget build(BuildContext context) {
@@ -812,6 +968,11 @@ class _ProfilePicker extends StatelessWidget {
             key: ValueKey<String>('profil-${profils[i].code}'),
             libelle: profils[i].libelle,
             selectionne: profils[i] == profil,
+            // PROVISIONNEMENT (30/10) : quand la tablette est figee sur un
+            // role, les autres profils sont AFFICHES mais non cliquables -
+            // l'operateur voit la gamme complete sans pouvoir en sortir.
+            verrouille: roleImpose != null &&
+                profils[i].roleCdc != roleImpose,
             surAppui: () => surChangement(profils[i]),
             hauteur: mise.hauteurBouton < 54 ? 54 : mise.hauteurBouton,
             police: (21 * mise.k).clamp(15.0, 21.0),
@@ -845,6 +1006,7 @@ class _ProfileButton extends StatelessWidget {
     required this.surAppui,
     required this.hauteur,
     required this.police,
+    this.verrouille = false,
   });
 
   final String libelle;
@@ -853,8 +1015,31 @@ class _ProfileButton extends StatelessWidget {
   final double hauteur;
   final double police;
 
+  /// Profil non autorise sur cette tablette : affiche, mais inerte.
+  final bool verrouille;
+
   @override
   Widget build(BuildContext context) {
+    // PROVISIONNEMENT (30/10) : un profil non autorise reste VISIBLE (l'operateur
+    // voit la gamme complete) mais grise et non cliquable.
+    if (verrouille) {
+      return Opacity(
+        opacity: 0.38,
+        child: Container(
+          height: hauteur,
+          alignment: Alignment.center,
+          color: AppColors.greyButton,
+          child: Text(
+            libelle,
+            style: TextStyle(
+              fontSize: police,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF70747A),
+            ),
+          ),
+        ),
+      );
+    }
     return Material(
       color: selectionne ? AppColors.slate : AppColors.greyButton,
       child: InkWell(

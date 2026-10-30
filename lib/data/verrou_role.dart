@@ -25,14 +25,38 @@ class VerrouRole {
   ///
   /// Choisie a partir de l'historique des sessions terrain. Pour ajouter une
   /// tablette : ajouter une ligne `'serial': 'codeRole'`.
+  /// UN SEUL role de chaque espece dans le parc (correction 30/10) :
+  /// 1 Excavatrice, 1 DT, 1 Spotter. Deux DT simultanes n'ont pas de sens
+  /// ici — les tablettes sont affectees une fois pour toutes.
+  ///
+  /// La coherence est verifiee au chargement de l'app
+  /// (voir [verifierCoherence]) : un doublon de role est une erreur de
+  /// configuration qui empecherait le BLE de fonctionner, on la signale
+  /// plutot que de la laisser passer en silence.
   static const Map<String, String> affectations = <String, String>{
     // Excavatrice : emet le GATT server et l'advertising BLE.
     'Active7NEU000566': 'ROLE_TAB3',
-    // Premier DT : client BLE (se connecte a l'excavatrice).
+    // DT : client BLE, se connecte a l'excavatrice.
     'Active7NEU000169': 'ROLE_TAB2',
-    // Second DT : client BLE.
-    'Active7NEU000562': 'ROLE_TAB2',
+    // Spotter : saisie des lignes, relaye par l'excavatrice.
+    'Active7NEU000562': 'ROLE_TAB1',
   };
+
+  /// Verifie qu'aucun role n'est attribue a deux tablettes.
+  ///
+  /// Rend la liste des roles dupliques (vide si la carte est saine).
+  /// Appelee au demarrage : un doublon casserait la chaine BLE (deux
+  /// clients ou deux serveurs sur le meme parc).
+  static List<String> verifierCoherence() {
+    final Map<String, int> compte = <String, int>{};
+    for (final String role in affectations.values) {
+      compte[role] = (compte[role] ?? 0) + 1;
+    }
+    return <String>[
+      for (final MapEntry<String, int> e in compte.entries)
+        if (e.value > 1) '${libelles[e.key] ?? e.key} x${e.value}',
+    ];
+  }
 
   /// Libelles lisibles des roles, pour la surface de connexion.
   static const Map<String, String> libelles = <String, String>{

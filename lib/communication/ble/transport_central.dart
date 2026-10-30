@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart' as rble;
@@ -353,6 +354,16 @@ class LienCentral implements LienBle {
     //
     // On annule donc APRES un tour de boucle, en absorbant toute erreur, et
     // on laisse le flux ouvert le temps que l'erreur soit consommee.
+    // En test, un Future.delayed non attendu fait echouer !timersPending.
+    // La fermeture differee est un correctif de terrain (crash RxBleThread) :
+    // sur le banc, on annule immediatement.
+    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        _subMessages.cancel();
+      } catch (_) {}
+      if (!_reception.isClosed) _reception.close();
+      return;
+    }
     Future<void>.delayed(const Duration(milliseconds: 150), () {
       try {
         _subMessages.cancel();

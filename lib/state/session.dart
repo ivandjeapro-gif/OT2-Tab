@@ -1442,7 +1442,18 @@ feederPerle(mesure);
   /// fraiche doit n'activer QUE ce que l'operateur coche ; avant, l'absence
   /// de cle valait « BLE actif » et le badge revenait meme apres avoir tout
   /// decoche.
-  bool get transportBleActif => base.meta('transport_ble') == '1';
+  /// DEFAUT BLE A 'ACTIF' (correction 30/10).\n  ///\n  /// Le getter exigeait la valeur exacte '1' : une cle absente, vide ou\n  /// ecrite a 'true' renvoyait false et la couche BLE ne demarrait JAMAIS\n  /// (constate sur le Spotter : aucun scan, badge 'search' definitif). Le\n  /// BLE est le transport nominal du site : seul '0' explicite le desactive.\n  bool get transportBleActif {\n    final String? v = base.meta('transport_ble');\n    return v == null || v.isEmpty || v != '0';\n  }
+
+  /// DEFAUT BLE A ACTIF (correction 30/10).
+  ///
+  /// Le getter exigeait la valeur exacte '1' : une cle absente, vide ou ecrite
+  /// a 'true' renvoyait false et la couche BLE ne demarrait JAMAIS (constate
+  /// sur le Spotter : aucun scan, badge 'search' definitif). Le BLE est le
+  /// transport nominal du site : seul '0' explicite le desactive.
+  bool get transportBleActif {
+    final String? v = base.meta('transport_ble');
+    return v == null || v.isEmpty || v != '0';
+  }
 
   bool get transportHotspotActif => base.meta('transport_hotspot') == '1';
 
@@ -1763,6 +1774,15 @@ feederPerle(mesure);
     }
     final bool estExcavatrice = BaseLocale.estTab3(profil.roleCdc);
     final bool estDt = BaseLocale.estTab2(profil.roleCdc);
+    // CLIENT BLE = DT **et** SPOTTER (fix 30/10).
+    //
+    // Le branchement historique etait `if (estDt) { BleClient } else if
+    // (estExcavatrice) { BleGateway }`. Le Spotter (ROLE_TAB1) ne tombait dans
+    // AUCUNE des deux branches : sa couche BLE n'etait jamais demarree, d'ou un
+    // badge « search » definitif. Or un Spotter est un client comme un DT : il
+    // doit scanner et s'accrocher a l'excavatrice pour relayer ses saisies.
+    final bool estSpotter = BaseLocale.estSpotter(profil.roleCdc);
+    final bool estClientBle = estDt || estSpotter;
     // NOM D'ADVERTISING UNIQUE par excavatrice (27/10).
     //
     // Toutes les tablettes s'annoncaient `ORE-EXC-001` : deux excavatrices
@@ -1784,9 +1804,12 @@ feederPerle(mesure);
     // la reconnexion a la pile systeme (connectGatt autoConnect=true) et
     // s'accroche donc SEUL des que la pelle redevient joignable.
     transport ??= estExcavatrice
-        ? TransportBlePeripherique()
-        : TransportBleNatif();
-    if (estDt) {
+        ? TransportBlePeripherique(
+            identiteEnrolee: identiteReseau,
+            codeRole: 3,
+          )
+        : TransportBleCentral();
+    if (estClientBle) {
       // DT : client BLE, il se connecte a l'excavatrice presente dans son rayon.
       final BleClient client = BleClient(
         transport: transport,
@@ -1795,7 +1818,10 @@ feederPerle(mesure);
         // (`TAB2-...`) ferait echouer le handshake en "non enrole" et
         // ouvrirait la session perle sous un nom inconnu du serveur.
         sourceDevice: identiteReseau,
-        role: BaseLocale.roleTab2,
+        // ROLE REEL DU CLIENT (fix 30/10) : etait fige a roleTab2, donc un
+        // Spotter se presentait comme un DT et l'excavatrice pouvait refuser
+        // le handshake. On transmet le role CDC reel du profil connecte.
+        role: profil.roleCdc,
         // JOURNAL RESEAU VERS L'UI — cote CLIENT aussi.
         //
         // Sans ce parametre, `BleClient` creait son `JournalBleMemoire`
@@ -1967,7 +1993,10 @@ feederPerle(mesure);
       final BleGateway gateway = BleGateway(
         transport: transport,
         idGateway: identiteReseau,
-        idsAutorises: base.idsDuRole(BaseLocale.roleTab2).toSet(),
+        idsAutorises: <String>{
+          ...base.idsDuRole(BaseLocale.roleTab2),
+          ...base.idsDuRole(BaseLocale.roleTab1),
+        },
         // Journal reseau VERS L'UI : sans lui, la supervision affichait
         // Â« Aucun evenement reseau journalise Â» alors que la connexion
         // BLE fonctionnait (chaque couche ecrivait dans son journal prive).
@@ -2008,10 +2037,12 @@ feederPerle(mesure);
           notifyListeners();
         }
       };
-      gateway.surDeconnexion = (String _) {
-        fermerSessionPerle();
-        _relaisTimer?.cancel();
-        _relaisTimer = null;
+      gateway.surDeconnexion = (String id) {
+        if (dtConnecte == id) {
+          fermerSessionPerle();
+          _relaisTimer?.cancel();
+          _relaisTimer = null;
+        }
       };
       _gatewayBle = gateway;
       await gateway.demarrer();

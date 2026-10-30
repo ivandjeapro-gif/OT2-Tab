@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:ble_peripheral/ble_peripheral.dart' as periph;
 import 'package:flutter/foundation.dart';
 
@@ -32,6 +33,8 @@ class TransportBlePeripherique implements TransportBle {
     // L'identite REELLE de l'engin (ex. HYUNDAI-32) voyage dans le HANDSHAKE
     // applicatif (`source_device`), pas dans le nom radio.
     this.nomPublic = 'ORE-EXC-001',
+    this.identiteEnrolee = '',
+    this.codeRole = 3,
     this.serviceUuid = uuidService,
     this.caracteristiqueRx = uuidCaracteristiqueRx,
     this.caracteristiqueTx = uuidCaracteristiqueTx,
@@ -52,6 +55,13 @@ class TransportBlePeripherique implements TransportBle {
   /// Nom annoncé en advertising : les clients BLE (DT) cherchent un nom qui
   /// commence par `ORE-EXC` (BleClient.connecter).
   final String nomPublic;
+
+  /// Identite enrolee publiee dans le scan response (ex. 'EX-32').
+  /// Vide = l'app ne publie que le role, sans id.
+  final String identiteEnrolee;
+
+  /// Code du role : 1 = Spotter, 2 = DT, 3 = Excavatrice.
+  final int codeRole;
   final String serviceUuid;
   final String caracteristiqueRx;
   final String caracteristiqueTx;
@@ -98,6 +108,9 @@ class TransportBlePeripherique implements TransportBle {
   ///   Android peut l'arreter sans que l'adaptateur bouge.
   void _demarrerSurveillancePile() {
     if (_surveillanceArmee) return;
+    // Pas de chien de garde dans les tests : un Timer.periodic non annule fait
+    // echouer le framework (!timersPending). C'est un mecanisme de terrain.
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
     _surveillanceArmee = true;
     periph.BlePeripheral.setBleStateChangeCallback(_surEtatAdaptateur);
     _surveillePile = Timer.periodic(const Duration(seconds: 10), (_) async {

@@ -132,6 +132,54 @@ class MainActivity : FlutterActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, canal)
             .setMethodCallHandler { appel, resultat ->
+                // METHODES AUTONOMES (fix 30/10) : elles ne dependent PAS du
+                // gestionnaire Wi-Fi Direct. Placees AVANT le garde, sinon un
+                // `gestionnaire == null` les rendait inaccessibles et le
+                // provisionnement SaaS etait ignore en silence.
+                when (appel.method) {
+                    "dossierDonneesExterne" -> {
+                        resultat.success(getExternalFilesDir(null)?.absolutePath ?: "")
+                        return@setMethodCallHandler
+                    }
+                    "dossierDonneesApp" -> {
+                        resultat.success(applicationContext.filesDir.absolutePath)
+                        return@setMethodCallHandler
+                    }
+                    "serialMateriel" -> {
+                        val s = try {
+                            val p = Runtime.getRuntime().exec(
+                                arrayOf("getprop", "ro.serialno")
+                            )
+                            p.inputStream.bufferedReader().readText().trim()
+                        } catch (e: Exception) { "" }
+                        resultat.success(s)
+                        return@setMethodCallHandler
+                    }
+                    "nomBluetoothUnique" -> {
+                        val souhaite = (appel.argument<String>("nom") ?: "").trim()
+                        if (souhaite.isEmpty()) {
+                            resultat.success(mapOf("ok" to false, "erreur" to "nom vide"))
+                        } else {
+                            try {
+                                val ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                                if (ad == null || !ad.isEnabled) {
+                                    resultat.success(mapOf("ok" to false, "erreur" to "bluetooth inactif"))
+                                } else {
+                                    val actuel = ad.name ?: ""
+                                    if (actuel == souhaite) {
+                                        resultat.success(mapOf("ok" to true, "nom" to actuel, "change" to false))
+                                    } else {
+                                        val fait = ad.setName(souhaite)
+                                        resultat.success(mapOf("ok" to fait, "nom" to souhaite, "change" to fait))
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                resultat.success(mapOf("ok" to false, "erreur" to (e.message ?: "echec")))
+                            }
+                        }
+                        return@setMethodCallHandler
+                    }
+                }
                 val gestionnaire = wifiDirect
                 if (gestionnaire == null) {
                     resultat.success(mapOf("ok" to false, "erreur" to "gestionnaire absent"))
@@ -389,80 +437,6 @@ class MainActivity : FlutterActivity() {
                             mapOf("ok" to true) + gestionnaire.etat() + etatHotspot +
                                 mapOf("typeHotspot" to (hotspot?.estDisponible() == true))
                         )
-                    }
-                    // SERIAL MATERIEL (fix 30/10) : sert de cle de
-                    // verrouillage du role (voir lib/data/verrou_role.dart).
-                    // SERIAL MATERIEL (fix 30/10).
-                    //
-                    // `Build.getSerial()` exige READ_PHONE_STATE et leve une
-                    // SecurityException sans elle : d'ou un serial vide et un
-                    // verrou de role inoperant (constate en terrain).
-                    // `ro.serialno` est une propriete systeme lisible par une
-                    // app ordinaire, sans aucune permission.
-                    "serialMateriel" -> {
-                        val s = try {
-                            val p = Runtime.getRuntime().exec(
-                                arrayOf("getprop", "ro.serialno")
-                            )
-                            p.inputStream.bufferedReader().readText().trim()
-                        } catch (e: Exception) {
-                            ""
-                        }
-                        if (s.isEmpty()) {
-                            Log.w("OREBLE", "serialMateriel : ro.serialno illisible")
-                        }
-                        resultat.success(s)
-                    }
-                    // NOM BLUETOOTH SYSTEME UNIQUE (fix 30/10).
-                    //
-                    // Cause racine du blocage GATT : deux tablettes portaient
-                    // le meme nom systeme `ORE-EXC-001`. Le DT s'appairait avec
-                    // LUI-MEME (bonds fantomes) et Android refusait la
-                    // connexion - la cible etant l'appareil lui-meme.
-                    //
-                    // L'app impose donc un nom derive de son role et de son
-                    // identite : `DT-DT-03-1500`, `EXC-EX-32`, `SPOT-SPOT-1`.
-                    // On ne touche a rien si le nom est deja correct.
-                    "nomBluetoothUnique" -> {
-                        val souhaite = (appel.argument<String>("nom") ?: "").trim()
-                        if (souhaite.isEmpty()) {
-                            resultat.success(
-                                mapOf("ok" to false, "erreur" to "nom vide")
-                            )
-                        } else {
-                            try {
-                                val adaptateur = android.bluetooth.BluetoothAdapter
-                                    .getDefaultAdapter()
-                                if (adaptateur == null || !adaptateur.isEnabled) {
-                                    resultat.success(
-                                        mapOf("ok" to false, "erreur" to "bluetooth inactif")
-                                    )
-                                } else {
-                                    val actuel = adaptateur.name ?: ""
-                                    if (actuel == souhaite) {
-                                        resultat.success(
-                                            mapOf("ok" to true, "nom" to actuel,
-                                                  "change" to false)
-                                        )
-                                    } else {
-                                        val fait = adaptateur.setName(souhaite)
-                                        resultat.success(
-                                            mapOf("ok" to fait, "nom" to souhaite,
-                                                  "ancien" to actuel, "change" to fait)
-                                        )
-                                    }
-                                }
-                            } catch (e: SecurityException) {
-                                resultat.success(
-                                    mapOf("ok" to false,
-                                          "erreur" to "BLUETOOTH_CONNECT requis : ${e.message}")
-                                )
-                            } catch (e: Exception) {
-                                resultat.success(
-                                    mapOf("ok" to false, "erreur" to (e.message ?: "echec"))
-                                )
-                            }
-                        }
                     }
                     "clients" -> gestionnaire.clients { noms ->
                         runOnUiThread {
