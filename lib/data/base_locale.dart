@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
@@ -1544,6 +1544,10 @@ class BaseLocale {
     // fait partie du coeur de l'application et doit fonctionner des la premiere
     // ouverture de session sans obliger l'utilisateur a aller cocher une case.
     'transport_ble': '1',
+    // Source de coordonnees : GNSS par defaut (demande du 30/10).
+    // Repli automatique sur le capteur de la tablette si aucun recepteur
+    // externe n'est detecte (voir ChoixGps.tientSaPromesse).
+    'source_gps': 'gnss',
     // Wi-Fi hotspot actif par defaut en secours :
     'transport_hotspot': '1',
   };

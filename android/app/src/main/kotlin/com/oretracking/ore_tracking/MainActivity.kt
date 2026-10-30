@@ -390,6 +390,29 @@ class MainActivity : FlutterActivity() {
                                 mapOf("typeHotspot" to (hotspot?.estDisponible() == true))
                         )
                     }
+                    // SERIAL MATERIEL (fix 30/10) : sert de cle de
+                    // verrouillage du role (voir lib/data/verrou_role.dart).
+                    // SERIAL MATERIEL (fix 30/10).
+                    //
+                    // `Build.getSerial()` exige READ_PHONE_STATE et leve une
+                    // SecurityException sans elle : d'ou un serial vide et un
+                    // verrou de role inoperant (constate en terrain).
+                    // `ro.serialno` est une propriete systeme lisible par une
+                    // app ordinaire, sans aucune permission.
+                    "serialMateriel" -> {
+                        val s = try {
+                            val p = Runtime.getRuntime().exec(
+                                arrayOf("getprop", "ro.serialno")
+                            )
+                            p.inputStream.bufferedReader().readText().trim()
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        if (s.isEmpty()) {
+                            Log.w("OREBLE", "serialMateriel : ro.serialno illisible")
+                        }
+                        resultat.success(s)
+                    }
                     // NOM BLUETOOTH SYSTEME UNIQUE (fix 30/10).
                     //
                     // Cause racine du blocage GATT : deux tablettes portaient

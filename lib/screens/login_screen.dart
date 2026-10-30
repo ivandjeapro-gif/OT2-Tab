@@ -1,8 +1,11 @@
-﻿import 'package:flutter/material.dart';
+import 'dart:async';
+
+import 'package:flutter/material.dart';
 
 import 'package:permission_handler/permission_handler.dart';
 import '../communication/ble/permissions_ble.dart';
 import '../data/base_locale.dart';
+import '../data/verrou_role.dart';
 import '../models/models.dart';
 import '../state/session.dart';
 import '../theme/app_theme.dart';
@@ -42,6 +45,10 @@ class _LoginScreenState extends State<LoginScreen> {
   /// Équipe choisie (personnes : SPOT). Le menu 2 liste les noms de l'equipe.
   String? _equipe;
 
+  /// Vrai quand le role est impose par le parc (serial -> role). L'ecran
+  /// n'autorise alors AUCUN changement de role (fix 30/10).
+  bool _verrouMateriel = false;
+
   /// Diagnostic des permissions BLE (28/10) : une reinstall efface les
   /// accords runtime Android 12+ et la couche BLE echouait alors
   /// SILENCIEUSEMENT (couche crue demarree, rien ne circulait). Verifie des
@@ -72,6 +79,10 @@ class _LoginScreenState extends State<LoginScreen> {
     // Verrouillage de role (PARAMETRES.md) : si cette tablette a deja porte
     // un role (`role_verrouille`), on le re-selectionne au demarrage — l'oper
     // rateur retrouve d'emblée le bon écran, sans re-apprendre le profil.
+    // Verrou MATERIEL d'abord (fix 30/10) : la table serial -> role de
+    // lib/data/verrou_role.dart prime sur `meta['role_verrouille']`, qui
+    // disparait a la reinstallation. Une tablette du parc garde ainsi son
+    // role pour toujours, et l'ecran ne propose plus de le changer.
     final String verrou = (widget.session.base.meta('role_verrouille') ?? '').trim();
     _profil = profils.isEmpty
         ? null
@@ -81,7 +92,41 @@ class _LoginScreenState extends State<LoginScreen> {
                 orElse: () => profils.first,
               )
             : profils.first);
+    // Application asynchrone du verrou materiel (le premier build affiche
+    // provisoirement le profil SQLite, puis il est corrige).
+    unawaited(_appliquerVerrouMateriel(profils));
     widget.session.addListener(_surSession);
+  }
+
+  /// Applique le verrou materiel (serial -> role) si la tablette est
+  /// affectee. Fixe `_profil` sur ce role et memorise le verrou en base
+  /// pour que le reste de l'app le voie.
+  Future<void> _appliquerVerrouMateriel(List<Profil> profils) async {
+    final String? role = await VerrouRole.roleImpose();
+    if (role == null) return;
+    // Sans referentiels charges (demarrage hors ligne), on memorise quand
+    // meme le verrou : il s'appliquera des que la liste sera disponible.
+    if (profils.isEmpty) {
+      if (widget.session.base.meta('role_verrouille') != role) {
+        await widget.session.base.majMeta('role_verrouille', role);
+      }
+      if (mounted) setState(() => _verrouMateriel = true);
+      return;
+    }    final Profil? impose = profils
+        .where((Profil p) => p.roleCdc == role)
+        .cast<Profil?>()
+        .firstWhere((Profil? p) => true, orElse: () => null);
+    if (impose == null) return;
+    if (widget.session.base.meta('role_verrouille') != role) {
+      await widget.session.base.majMeta('role_verrouille', role);
+    }
+    if (!mounted) return;
+    setState(() {
+      _verrouMateriel = true;
+      _profil = impose;
+      _id = null;
+      _name = null;
+    });
   }
 
   @override
@@ -112,6 +157,22 @@ class _LoginScreenState extends State<LoginScreen> {
     // role (`role_verrouille` dans `meta`) refuse silencieusement un autre
     // role sauf confirmation explicite — cela evite qu'une erreur d'appui
     // remonte les couches BLE / Wi-Fi Direct de la session.
+    // VERROU MATERIEL : aucune exception, aucune confirmation. Une tablette
+    // affectee a un role dans `VerrouRole.affectations` ne peut PAS en sortir
+    // (fix 30/10). C'est ce qui garantit la stabilite du parc.
+    if (_verrouMateriel) {
+      if (profil.roleCdc != _profil?.roleCdc) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Cette tablette est verrouillee sur son role : '
+              'le changement est desactive.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     final String? verrou = widget.session.base.meta('role_verrouille');
     if (verrou != null && verrou != profil.roleCdc) {
       _demanderDeverrouillage(profil);
