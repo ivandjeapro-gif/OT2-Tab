@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../communication/ble/ble_gateway.dart';
 import '../communication/ble/ble_protocole.dart';
@@ -1458,11 +1459,65 @@ feederPerle(mesure);
   /// son transport reel. En cas d'echec d'une couche, l'autre continue : le
   /// Wi-Fi et le BLE sont deux chemins redondants vers la meme excavatrice,
   /// pas une chaine obligatoire.
+  /// Impose un nom Bluetooth systeme UNIQUE a cette tablette (fix 30/10).
+  ///
+  /// Sans cela, deux tablettes peuvent garder le meme nom (`ORE-EXC-001`) :
+  /// elles s'appairent alors entre elles et le GATT echoue en boucle, car
+  /// chacune vise l'appareil qu'elle est elle-meme (constate en terrain,
+  /// resolu en renommant manuellement le DT).
+  ///
+  /// Le nom derive du ROLE et de l'identite enrolee :
+  ///   - DT        : `DT-<identite>`   (ex. `DT-DT-03-1500`)
+  ///   - Excavatrice : `EXC-<identite>`  (ex. `EXC-EX-32`)
+  ///   - Spotter   : `SPOT-<identite>` (ex. `SPOT-SPOT-1`)
+  ///
+  /// Aucun effet hors Android, aucune exception remontee : un echec de
+  /// renommage ne doit jamais empecher le demarrage des couches.
+  /// Canal natif partage (Wi-Fi Direct, nom Bluetooth, route reseau).
+  static const MethodChannel _canalBluetooth =
+      MethodChannel('ore_tracking/wifi_direct');
+
+  Future<void> _appliquerNomBluetoothUnique() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    final Profil? p = profile;
+    if (p == null) return;
+    final String prefixe = BaseLocale.estTab3(p.roleCdc)
+        ? 'EXC'
+        : BaseLocale.estTab2(p.roleCdc)
+            ? 'DT'
+            : 'SPOT';
+    // 31 octets max pour un localName BLE : on borne l'identite.
+    String id = identiteReseau.replaceAll(RegExp(r'[^A-Za-z0-9-]'), '');
+    if (id.length > 14) id = id.substring(0, 14);
+    final String souhaite = '$prefixe-$id';
+    try {
+      final Map<Object?, Object?>? r = await _canalBluetooth
+          .invokeMapMethod<Object?, Object?>('nomBluetoothUnique', <String, Object?>{
+        'nom': souhaite,
+      });
+      if (r != null && r['ok'] == true) {
+        if (r['change'] == true) {
+          push('Bluetooth renomme en $souhaite (nom unique)');
+        }
+      } else {
+        push('Bluetooth : renommage impossible (${r?['erreur'] ?? '?'})');
+      }
+    } catch (_) {
+      // Canal absent (tests, plateforme non Android) : sans consequence.
+    }
+  }
   Future<void> demarrerCouchesLocales({
     TransportBle? transportBle,
     TransportWifi? transportWifi,
   }) async {
     if (!_actif) return;
+    // NOM BLUETOOTH SYSTEME UNIQUE (fix 30/10).
+    //
+    // Deux tablettes portant le meme nom systeme se sont appairees entre
+    // elles, et le DT ne pouvait plus se connecter : il visait l'appareil
+    // qu'il etait lui-meme. On impose donc un nom derive du role et de
+    // l'identite enrolee, sans jamais toucher a un nom deja correct.
+    unawaited(_appliquerNomBluetoothUnique());
     // Un mode decoche dans les Parametres ne demarre pas : pas de couche,
     // pas de permissions demandees, pas de badge. L'excavatrice decochee
     // « Hotspot » n'ouvre donc ni Wi-Fi Direct ni partage de connexion.

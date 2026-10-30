@@ -390,6 +390,57 @@ class MainActivity : FlutterActivity() {
                                 mapOf("typeHotspot" to (hotspot?.estDisponible() == true))
                         )
                     }
+                    // NOM BLUETOOTH SYSTEME UNIQUE (fix 30/10).
+                    //
+                    // Cause racine du blocage GATT : deux tablettes portaient
+                    // le meme nom systeme `ORE-EXC-001`. Le DT s'appairait avec
+                    // LUI-MEME (bonds fantomes) et Android refusait la
+                    // connexion - la cible etant l'appareil lui-meme.
+                    //
+                    // L'app impose donc un nom derive de son role et de son
+                    // identite : `DT-DT-03-1500`, `EXC-EX-32`, `SPOT-SPOT-1`.
+                    // On ne touche a rien si le nom est deja correct.
+                    "nomBluetoothUnique" -> {
+                        val souhaite = (appel.argument<String>("nom") ?: "").trim()
+                        if (souhaite.isEmpty()) {
+                            resultat.success(
+                                mapOf("ok" to false, "erreur" to "nom vide")
+                            )
+                        } else {
+                            try {
+                                val adaptateur = android.bluetooth.BluetoothAdapter
+                                    .getDefaultAdapter()
+                                if (adaptateur == null || !adaptateur.isEnabled) {
+                                    resultat.success(
+                                        mapOf("ok" to false, "erreur" to "bluetooth inactif")
+                                    )
+                                } else {
+                                    val actuel = adaptateur.name ?: ""
+                                    if (actuel == souhaite) {
+                                        resultat.success(
+                                            mapOf("ok" to true, "nom" to actuel,
+                                                  "change" to false)
+                                        )
+                                    } else {
+                                        val fait = adaptateur.setName(souhaite)
+                                        resultat.success(
+                                            mapOf("ok" to fait, "nom" to souhaite,
+                                                  "ancien" to actuel, "change" to fait)
+                                        )
+                                    }
+                                }
+                            } catch (e: SecurityException) {
+                                resultat.success(
+                                    mapOf("ok" to false,
+                                          "erreur" to "BLUETOOTH_CONNECT requis : ${e.message}")
+                                )
+                            } catch (e: Exception) {
+                                resultat.success(
+                                    mapOf("ok" to false, "erreur" to (e.message ?: "echec"))
+                                )
+                            }
+                        }
+                    }
                     "clients" -> gestionnaire.clients { noms ->
                         runOnUiThread {
                             resultat.success(mapOf("ok" to true, "clients" to noms))
