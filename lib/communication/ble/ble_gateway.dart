@@ -544,6 +544,17 @@ class BleClient {
     // tablette. Le scan reste le repli quand rien n'est encore memorise
     // (premiere connexion) ou quand l'adresse a change (appairage Android
     // qui renouvelle l'adresse privee).
+    // ADRESSE MEMORISEE : UN ESSAI COURT, PUIS SCAN (fix 30/10).
+    //
+    // Android 12+ applique la confidentialite BLE : le peripherique annonce
+    // une adresse PRIVEE ALEATOIRE qui tourne (observe : `5B:8F:...` puis
+    // `7E:46:...` pour la meme tablette, dont l'adresse physique est
+    // `EE:D2:...`). Une adresse memorisee est donc souvent MORTE : la viser
+    // fait consommer le timeout entier (10 s) a CHAQUE tentative, et la
+    // reconnexion automatique n'aboutit jamais.
+    //
+    // On ne consacre plus qu'un essai COURT (2 s) a l'adresse memorisee ;
+    // le scan prend le relais immediatement s'il ne repond pas.
     if (_adresseMemoire != null && _adresseMemoire!.isNotEmpty) {
       _journal.ligne('BLE reconnexion a $nomAppareil ($_adresseMemoire)');
       try {
@@ -553,7 +564,7 @@ class BleClient {
               nom: nomAppareil,
               rssi: 0,
             ))
-            .timeout(delai);
+            .timeout(const Duration(seconds: 2));
         if (await _authentifier(delai)) return true;
         // Echec sur l'adresse memorisee : on repasse par le scan.
         await _lien?.fermer();
@@ -562,6 +573,8 @@ class BleClient {
         _journal.ligne('BLE reconnexion directe echouee ($e) - scan');
         _lien = null;
       }
+      // Adresse privee morte (rotation Android) : on n'y revient plus.
+      _adresseMemoire = null;
     }
 
     // Le filtre `withServices` rate l'excavatrice de façon intermittente

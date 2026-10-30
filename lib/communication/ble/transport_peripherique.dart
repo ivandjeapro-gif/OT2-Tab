@@ -150,7 +150,33 @@ class TransportBlePeripherique implements TransportBle {
     // reconstruction (apres une coupure du Bluetooth, `_prete` est remis a
     // faux par [_surEtatAdaptateur]) : c'est la seule facon de retrouver un
     // serveur vivant, le plugin ne le rouvrant jamais de lui-meme.
-    await periph.BlePeripheral.initialize();
+    periph.BlePeripheral.setWriteRequestCallback(
+      (
+        String deviceId,
+        String characteristicId,
+        int offset,
+        Uint8List? valeur,
+      ) {
+        debugPrint('OREBLE rx ${valeur?.length} octets sur '
+            '$characteristicId de $deviceId');
+        // Le plugin renvoie l'UUID en majuscules (`0000FE5B-...`) alors que
+        // les constantes sont en minuscules : comparer sans la casse, sinon
+        // l'ecriture du client est jetee et le gateway repond "pas de
+        // handshake" (observe en terrain, 21/10).
+        if (valeur == null ||
+            characteristicId.toLowerCase() != caracteristiqueRx) {
+          return null;
+        }
+        _livrer(deviceId, valeur);
+        // Accusé GATT : écriture acceptée.
+        return periph.WriteRequestResult(status: 0);
+      },
+    );
+    periph.BlePeripheral.setConnectionStateChangeCallback(
+      (String deviceId, bool connecte) {
+        if (!connecte) _fermerLien(deviceId);
+      },
+    );
     periph.BlePeripheral.setServiceAddedCallback(
         (String serviceId, String? erreur) {
       // Journalise, ne leve pas : une exception depuis un callback de plugin
@@ -169,6 +195,9 @@ class TransportBlePeripherique implements TransportBle {
     // ajoute. Le serveur reste alors sans service pendant que la publicite
     // continue d'annoncer l'UUID — le DT voit l'excavatrice, s'y connecte et
     // n'obtient jamais de reponse.
+    // Ouverture du serveur APRES avoir pose tous les callbacks (fix 30/10).
+    await periph.BlePeripheral.initialize();
+
     await periph.BlePeripheral.addService(
       periph.BleService(
         uuid: serviceUuid,
@@ -200,33 +229,8 @@ class TransportBlePeripherique implements TransportBle {
         ],
       ),
     );
-    periph.BlePeripheral.setWriteRequestCallback(
-      (
-        String deviceId,
-        String characteristicId,
-        int offset,
-        Uint8List? valeur,
-      ) {
-        debugPrint('OREBLE rx ${valeur?.length} octets sur '
-            '$characteristicId de $deviceId');
-        // Le plugin renvoie l'UUID en majuscules (`0000FE5B-...`) alors que
-        // les constantes sont en minuscules : comparer sans la casse, sinon
-        // l'ecriture du client est jetee et le gateway repond "pas de
-        // handshake" (observe en terrain, 21/10).
-        if (valeur == null ||
-            characteristicId.toLowerCase() != caracteristiqueRx) {
-          return null;
-        }
-        _livrer(deviceId, valeur);
-        // Accusé GATT : écriture acceptée.
-        return periph.WriteRequestResult(status: 0);
-      },
-    );
-    periph.BlePeripheral.setConnectionStateChangeCallback(
-      (String deviceId, bool connecte) {
-        if (!connecte) _fermerLien(deviceId);
-      },
-    );
+
+    // (deplace avant initialize() ci-dessus)
     // CE QUE LE SERVEUR PORTE REELLEMENT.
     //
     // L'advertisement annonce l'UUID du service parce qu'on le lui passe en

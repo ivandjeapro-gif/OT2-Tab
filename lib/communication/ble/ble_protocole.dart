@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -188,12 +188,12 @@ class ControleurProximite {
         assert(mesuresPourDecider >= 1);
 
   /// Variante exprimee **en metres** : la zone de connexion du profil
-  /// excavator est specifiee en distance (« rayon de 10 m »), pas en dBm.
+  /// excavator est specifiee en distance (« rayon de 3 m »), pas en dBm.
   ///
   /// Le RSSI etant bruite, l'entree se fait au rayon exact et la sortie
-  /// un peu plus loin (hysteresis de 25 % : on ne sort pas pour un creux) :
+  /// un peu plus loin (hysteresis de 5 m : on ne sort pas pour un creux) :
   /// - entree a [rayonM] metres ;
-  /// - sortie a `rayonM * 1.25` metres.
+  /// - sortie a `rayonM + 5` metres (hysteresis de 5 m).
   ///
   /// La conversion RSSI <-> distance est l'inverse de [distanceEstimee]
   /// (reference -59 dBm a 1 m). C'est une approximation d'ordre de grandeur :
@@ -204,7 +204,7 @@ class ControleurProximite {
     int dbmAUnMetre = -59,
   }) {
     final int entree = _dbmPourDistance(rayonM, dbmAUnMetre);
-    final int sortie = _dbmPourDistance(rayonM * 1.25, dbmAUnMetre);
+    final int sortie = _dbmPourDistance(rayonM + 5, dbmAUnMetre);
     return ControleurProximite(
       seuilEntreeDbm: entree,
       seuilSortieDbm: sortie,

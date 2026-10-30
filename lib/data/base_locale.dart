@@ -1540,6 +1540,12 @@ class BaseLocale {
     'api_base':
         'https://script.google.com/macros/s/AKfycbwwE_oFNpVeZmXuJT6qL9yUGBW3Xn-930tEtfnH8k-hV-bBkyjH8b5VOA4aqgo_2UH2GA/exec',
     'api_token': 'bcjp29afy3uso1mltw60vdnre5qgzk8xhi47',
+    // Transport BLE actif par defaut (fix 30/10) : l'echange pelle <-> DT
+    // fait partie du coeur de l'application et doit fonctionner des la premiere
+    // ouverture de session sans obliger l'utilisateur a aller cocher une case.
+    'transport_ble': '1',
+    // Wi-Fi hotspot actif par defaut en secours :
+    'transport_hotspot': '1',
   };
 
   /// Versions lues dans `meta` (§23), avec repli sur les defauts serveur.

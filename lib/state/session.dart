@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -1682,7 +1682,7 @@ feederPerle(mesure);
   /// (option Â« a Â» impossible). Il est applique au **filtrage** (option
   /// Â« b Â») : un DT au-dela du rayon est refuse au handshake, puis
   /// deconnecte par la supervision RSSI.
-  double get rayonConnexionM => _doubleMeta('rayon_connexion_m', 10);
+  double get rayonConnexionM => _doubleMeta('rayon_connexion_m', 3);
 
   /// Demarre la couche BLE selon le role.
   ///
@@ -1721,9 +1721,16 @@ feederPerle(mesure);
     //   'ORE-EXC-001' (le nom dynamique cassait l'advertising BLE).
     // - DT / client : `TransportBleCentral()` (flutter_reactive_ble), qui
     //   scanne ouvertement et s'accroche a 'ORE-EXC-001'.
+    // DT : TRANSPORT NATIF (fix 30/10).
+    //
+    // flutter_reactive_ble ne sait pas faire d'autoConnect : il ouvre un
+    // GATT direct qui echoue des que l'adresse privee du peripherique a
+    // tourne (Android 12+). Le gestionnaire natif oret/ble_central delegue
+    // la reconnexion a la pile systeme (connectGatt autoConnect=true) et
+    // s'accroche donc SEUL des que la pelle redevient joignable.
     transport ??= estExcavatrice
         ? TransportBlePeripherique()
-        : TransportBleCentral();
+        : TransportBleNatif();
     if (estDt) {
       // DT : client BLE, il se connecte a l'excavatrice presente dans son rayon.
       final BleClient client = BleClient(

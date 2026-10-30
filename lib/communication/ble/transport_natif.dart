@@ -106,7 +106,18 @@ class TransportBleNatif implements TransportBle {
     // Le lien est rendu immediatement : sa disponibilite EST l'etat de la
     // machine. `BleClient` s'abonne ensuite a `messages` pour le handshake —
     // exactement comme avec le transport `flutter_reactive_ble`.
-    final LienBleNatif lien = LienBleNatif._(this, appareil.id, appareil.nom);
+    // CONNEXION REELLE (fix 30/10). L'ancienne version rendait un lien fictif
+    // sans jamais demander la connexion -> 'Bad state: lien ferme' au handshake.
+    if (!machine.connecte) {
+      final int echeance = DateTime.now().millisecondsSinceEpoch + 12000;
+      while (!machine.connecte &&
+          DateTime.now().millisecondsSinceEpoch < echeance) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    if (!machine.connecte) {
+      throw StateError('connexion BLE native impossible (delai depasse)');
+    }    final LienBleNatif lien = LienBleNatif._(this, appareil.id, appareil.nom);
     _lien = lien;
     _entrants.add(lien);
     unawaited(machine.memoriser(appareil.id, appareil.nom));

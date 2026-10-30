@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import 'package:permission_handler/permission_handler.dart';
 import '../communication/ble/permissions_ble.dart';
@@ -1024,13 +1024,21 @@ class SelectField extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(
         children: [
+          // TOUT LE CHAMP EST CLIQUABLE (fix 30/10) : l'icone fleche etait
+          // placee HORS du DropdownButton et absorbait les taps, d'ou des
+          // selections qui ne passaient jamais. On la ramene DANS le bouton
+          // et on elargit la zone de tap a tout le conteneur.
           Expanded(
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: valeur,
                 isExpanded: true,
                 alignment: Alignment.center,
-                icon: const SizedBox.shrink(),
+                icon: Icon(
+                  Icons.keyboard_arrow_down,
+                  size: (30 * mise.k).clamp(20.0, 30.0),
+                  color: const Color(0xFF8A8D91),
+                ),
                 hint: Center(child: Text(indice, style: styleIndice)),
                 selectedItemBuilder: (context) => [
                   for (final element in elements)
@@ -1052,10 +1060,6 @@ class SelectField extends StatelessWidget {
                 },
               ),
             ),
-          ),
-          Icon(
-            Icons.keyboard_arrow_down,
-            size: (30 * mise.k).clamp(20.0, 30.0),
           ),
         ],
       ),

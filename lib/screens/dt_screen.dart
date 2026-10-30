@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../state/session.dart';
 import '../theme/app_theme.dart';
@@ -340,7 +340,7 @@ class _BanniereAffectation extends StatelessWidget {
               alerte
                   ? messageAlerte
                   : recue
-                      ? 'ValidÃ© par le serveur Â· '
+                      ? 'Validé par le serveur · '
                           '${heureLocal(session.horodatageAffectation)}'
                       : 'Affectation en attente du serveur',
               maxLines: 1,
@@ -364,7 +364,33 @@ class _BanniereAffectation extends StatelessWidget {
   /// croire a une heure fausse.
   static String heureLocal(String? iso) {
     if (iso == null || iso.isEmpty) return '--:--:--';
-    final DateTime? brut = DateTime.tryParse(iso);
+    // ISO 8601 d'abord (format attendu).
+    DateTime? brut = DateTime.tryParse(iso);
+    // Format JavaScript renvoye par Apps Script / Google Sheets :
+    //   "Wed Oct 21 2026 16:31:56 GMT+0100 (heure d'Europe centrale)"
+    // DateTime.tryParse le refuse, d'ou l'affichage brut constate en terrain.
+    if (brut == null) {
+      final RegExp js = RegExp(
+        r'([A-Za-z]{3})\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+'
+        r'(\d{2}):(\d{2}):(\d{2})',
+      );
+      final RegExpMatch? m = js.firstMatch(iso);
+      const Map<String, int> mois = <String, int>{
+        'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+        'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+      };
+      final int? moisNum = m == null ? null : mois[m.group(2)];
+      if (m != null && moisNum != null) {
+        brut = DateTime(
+          int.parse(m.group(4)!),
+          moisNum,
+          int.parse(m.group(3)!),
+          int.parse(m.group(5)!),
+          int.parse(m.group(6)!),
+          int.parse(m.group(7)!),
+        );
+      }
+    }
     if (brut == null) return iso;
     final DateTime heure = brut.toLocal();
     String deux(int v) => v.toString().padLeft(2, '0');
